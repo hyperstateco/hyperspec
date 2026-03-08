@@ -8,6 +8,7 @@ pub mod io;
 pub use algorithms::continuum::continuum_removal;
 pub use algorithms::indices::{band_ratio, ndvi, normalized_difference};
 pub use algorithms::mnf::{MnfResult, mnf, mnf_denoise};
+pub use algorithms::normalize::{normalize_minmax, normalize_zscore};
 pub use algorithms::pca::{PcaResult, pca, pca_inverse, pca_transform};
 pub use algorithms::resample::{ResampleMethod, resample};
 pub use algorithms::sam::sam;
