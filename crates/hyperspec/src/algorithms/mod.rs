@@ -4,3 +4,4 @@ pub mod mnf;
 pub mod pca;
 pub mod resample;
 pub mod sam;
+pub mod stats;
