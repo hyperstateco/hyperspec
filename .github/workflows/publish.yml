@@ -32,7 +32,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - run: pip install maturin ${{ matrix.cross && 'ziglang' || '' }}
+      - run: pip install maturin "numpy>=2.0" ${{ matrix.cross && 'ziglang' || '' }}
       - run: maturin build --release --target ${{ matrix.target }} ${{ matrix.cross && '--zig -i python3.13' || '' }}
       - uses: actions/upload-artifact@v4
         with:

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1
+
+- **Fix**: build wheels against numpy 2.x C ABI for runtime compatibility with numpy 2.x
+
 ## 0.6.0
 
 - **ENVI I/O**: read/write with BSQ/BIL/BIP interleave, all numeric types (u8–f64), memory-mapped reads, atomic writes

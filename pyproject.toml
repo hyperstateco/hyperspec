@@ -1,10 +1,10 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.0,<2.0", "numpy>=2.0"]
 build-backend = "maturin"
 
 [project]
 name = "hyperspec-py"
-version = "0.6.0"
+version = "0.6.1"
 description = "Fast hyperspectral data processing for remote sensing and ML pipelines"
 readme = "README.md"
 requires-python = ">=3.12"
