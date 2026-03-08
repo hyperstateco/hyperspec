@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- **Type stubs**: `.pyi` file with full signatures, return types, and docstrings for all classes and functions — enables IDE autocomplete and mypy support
+
 ## 0.7.0
 
 - **Statistics**: `band_stats` (per-band min/max/mean/std/valid_count), `covariance`, `correlation` — Welford's algorithm, rayon-parallel, NaN/nodata-aware, population normalization

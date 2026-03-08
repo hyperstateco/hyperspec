@@ -26,7 +26,7 @@ from hyperspec import (
 
 
 def test_version():
-    assert hyperspec.__version__ == "0.7.0"
+    assert hyperspec.__version__ == "0.7.1"
 
 
 def make_cube(bands=3, height=2, width=4):
