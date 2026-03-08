@@ -13,6 +13,7 @@ pub use algorithms::normalize::{normalize_minmax, normalize_zscore};
 pub use algorithms::pca::{PcaResult, pca, pca_inverse, pca_transform};
 pub use algorithms::resample::{ResampleMethod, resample};
 pub use algorithms::sam::sam;
+pub use algorithms::smooth::savitzky_golay;
 pub use algorithms::stats::{BandStats, band_stats, correlation, covariance};
 pub use cube::SpectralCube;
 pub use error::{HyperspecError, Result};

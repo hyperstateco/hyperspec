@@ -6,4 +6,5 @@ pub mod normalize;
 pub mod pca;
 pub mod resample;
 pub mod sam;
+pub mod smooth;
 pub mod stats;
