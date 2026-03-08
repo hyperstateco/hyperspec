@@ -8,11 +8,10 @@ use hyperspec::{
     band_ratio as rs_band_ratio, band_stats as rs_band_stats,
     continuum_removal as rs_continuum_removal, correlation as rs_correlation,
     covariance as rs_covariance, derivative as rs_derivative, mnf as rs_mnf,
-    mnf_denoise as rs_mnf_denoise, ndvi as rs_ndvi,
-    normalize_minmax as rs_normalize_minmax, normalize_zscore as rs_normalize_zscore,
-    normalized_difference as rs_normalized_difference, pca as rs_pca,
-    pca_inverse as rs_pca_inverse, pca_transform as rs_pca_transform, read_envi as rs_read_envi,
-    read_zarr as rs_read_zarr, read_zarr_window as rs_read_zarr_window,
+    mnf_denoise as rs_mnf_denoise, ndvi as rs_ndvi, normalize_minmax as rs_normalize_minmax,
+    normalize_zscore as rs_normalize_zscore, normalized_difference as rs_normalized_difference,
+    pca as rs_pca, pca_inverse as rs_pca_inverse, pca_transform as rs_pca_transform,
+    read_envi as rs_read_envi, read_zarr as rs_read_zarr, read_zarr_window as rs_read_zarr_window,
     read_zarr_with_options as rs_read_zarr_with_options, resample as rs_resample, sam as rs_sam,
     savitzky_golay as rs_savitzky_golay, write_envi_with_options as rs_write_envi_with_options,
     write_zarr_with_options as rs_write_zarr_with_options, zarr_cube_shape as rs_zarr_cube_shape,
@@ -429,18 +428,12 @@ fn band_stats(cube: &PySpectralCube) -> PyBandStats {
 }
 
 #[pyfunction]
-fn covariance<'py>(
-    py: Python<'py>,
-    cube: &PySpectralCube,
-) -> Bound<'py, PyArray2<f64>> {
+fn covariance<'py>(py: Python<'py>, cube: &PySpectralCube) -> Bound<'py, PyArray2<f64>> {
     PyArray2::from_owned_array(py, rs_covariance(&cube.inner))
 }
 
 #[pyfunction]
-fn correlation<'py>(
-    py: Python<'py>,
-    cube: &PySpectralCube,
-) -> Bound<'py, PyArray2<f64>> {
+fn correlation<'py>(py: Python<'py>, cube: &PySpectralCube) -> Bound<'py, PyArray2<f64>> {
     PyArray2::from_owned_array(py, rs_correlation(&cube.inner))
 }
 

@@ -25,7 +25,11 @@ pub fn normalize_minmax(cube: &SpectralCube) -> Result<SpectralCube> {
         .collect();
 
     apply_per_band(cube, &params, |v, &(mn, range)| {
-        if !range.is_finite() || range == 0.0 { 0.0 } else { (v - mn) / range }
+        if !range.is_finite() || range == 0.0 {
+            0.0
+        } else {
+            (v - mn) / range
+        }
     })
 }
 
@@ -40,12 +44,14 @@ pub fn normalize_zscore(cube: &SpectralCube) -> Result<SpectralCube> {
     let means = stats.mean.as_slice().unwrap();
     let stds = stats.std.as_slice().unwrap();
 
-    let params: Vec<(f64, f64)> = (0..cube.bands())
-        .map(|b| (means[b], stds[b]))
-        .collect();
+    let params: Vec<(f64, f64)> = (0..cube.bands()).map(|b| (means[b], stds[b])).collect();
 
     apply_per_band(cube, &params, |v, &(mu, sigma)| {
-        if !sigma.is_finite() || sigma == 0.0 { 0.0 } else { (v - mu) / sigma }
+        if !sigma.is_finite() || sigma == 0.0 {
+            0.0
+        } else {
+            (v - mu) / sigma
+        }
     })
 }
 

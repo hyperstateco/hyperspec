@@ -15,7 +15,11 @@ use crate::error::{HyperspecError, Result};
 ///
 /// Pixels where any band is NaN or nodata produce all NaN in the output.
 /// Edge bands use mirror-reflection boundary extension.
-pub fn savitzky_golay(cube: &SpectralCube, window: usize, polyorder: usize) -> Result<SpectralCube> {
+pub fn savitzky_golay(
+    cube: &SpectralCube,
+    window: usize,
+    polyorder: usize,
+) -> Result<SpectralCube> {
     if window < 3 || window % 2 == 0 {
         return Err(HyperspecError::InvalidInput(format!(
             "window must be odd and ≥ 3, got {}",
@@ -253,8 +257,10 @@ mod tests {
     fn test_sg_reduces_noise() {
         // Noisy signal → smoothed signal should have lower variance
         let wl = Array1::from_vec((0..20).map(|i| 400.0 + i as f64 * 10.0).collect());
-        let noise = [0.1, -0.2, 0.15, -0.1, 0.05, -0.15, 0.2, -0.05, 0.1, -0.1,
-                     0.12, -0.18, 0.08, -0.12, 0.06, -0.14, 0.16, -0.08, 0.11, -0.09];
+        let noise = [
+            0.1, -0.2, 0.15, -0.1, 0.05, -0.15, 0.2, -0.05, 0.1, -0.1, 0.12, -0.18, 0.08, -0.12,
+            0.06, -0.14, 0.16, -0.08, 0.11, -0.09,
+        ];
         let data = Array3::from_shape_fn((20, 1, 1), |(b, _, _)| 1.0 + noise[b]);
         let cube = SpectralCube::new(data, wl, None, None).unwrap();
 
