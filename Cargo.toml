@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/hyperspec", "pyo3-hyperspec"]
+resolver = "2"
+
+[workspace.package]
+version = "0.6.0"
+edition = "2024"
+authors = ["Brian Kim <brian@hyperstate.co>"]
+license = "Apache-2.0"
+repository = "https://github.com/hyperstateco/hyperspec"
+
+[workspace.dependencies]
+ndarray = "0.17"
+rayon = "1.10"
+thiserror = "2"
+memmap2 = "0.9"
+zarrs = { version = "0.23", default-features = false, features = ["filesystem", "ndarray", "gzip"] }
+serde_json = "1"
+tempfile = "3"

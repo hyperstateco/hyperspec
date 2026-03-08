@@ -1,0 +1,36 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "hyperspec-py"
+version = "0.6.0"
+description = "Fast hyperspectral data processing for remote sensing and ML pipelines"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Brian Kim", email = "brian@hyperstate.co" }]
+keywords = ["hyperspectral", "remote-sensing", "earth-observation", "satellite-imagery", "geospatial"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.8"]
+
+[project.urls]
+Homepage = "https://hyperstate.co"
+Repository = "https://github.com/hyperstateco/hyperspec"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+manifest-path = "pyo3-hyperspec/Cargo.toml"
+python-source = "pyo3-hyperspec/python"
+module-name = "hyperspec._hyperspec"

@@ -1,0 +1,17 @@
+[package]
+name = "pyo3-hyperspec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fast hyperspectral data processing for remote sensing and ML pipelines (Python bindings)"
+
+[lib]
+name = "_hyperspec"
+crate-type = ["cdylib"]
+
+[dependencies]
+hyperspec = { version = "0.6.0", path = "../crates/hyperspec" }
+ndarray = { workspace = true }
+numpy = "0.28"
+pyo3 = { version = "0.28", features = ["extension-module"] }
