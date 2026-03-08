@@ -5,16 +5,23 @@ import hyperspec
 from hyperspec import (
     SpectralCube,
     band_ratio,
+    band_stats,
     continuum_removal,
+    correlation,
+    covariance,
+    derivative,
     mnf,
     mnf_denoise,
     ndvi,
+    normalize_minmax,
+    normalize_zscore,
     normalized_difference,
     pca,
     pca_inverse,
     pca_transform,
     resample,
     sam,
+    savitzky_golay,
 )
 
 
@@ -629,3 +636,218 @@ class TestResample:
         cube = self._make_linear_cube()
         with pytest.raises(ValueError, match="unknown method"):
             resample(cube, np.array([500.0]), "spline")
+
+
+class TestBandStats:
+    def _make_cube(self):
+        data = np.zeros((3, 2, 2))
+        data[0] = [[1, 2], [3, 4]]
+        data[1] = [[10, 20], [30, 40]]
+        data[2] = [[5, 5], [5, 5]]
+        wl = np.array([450.0, 550.0, 650.0])
+        return SpectralCube(data, wl)
+
+    def test_basic(self):
+        cube = self._make_cube()
+        s = band_stats(cube)
+        assert repr(s) == "BandStats(bands=3)"
+        np.testing.assert_allclose(s.mean(), [2.5, 25.0, 5.0])
+        np.testing.assert_allclose(s.min(), [1.0, 10.0, 5.0])
+        np.testing.assert_allclose(s.max(), [4.0, 40.0, 5.0])
+        np.testing.assert_allclose(s.valid_count(), [4, 4, 4])
+        assert s.std()[2] == pytest.approx(0.0)
+
+    def test_nodata(self):
+        data = np.array([[[1.0, -9999.0, 3.0]]])
+        cube = SpectralCube(data, np.array([500.0]), nodata=-9999.0)
+        s = band_stats(cube)
+        assert s.valid_count()[0] == 2
+        assert s.mean()[0] == pytest.approx(2.0)
+
+    def test_covariance(self):
+        cube = self._make_cube()
+        cov = covariance(cube)
+        assert cov.shape == (3, 3)
+        # Symmetric
+        np.testing.assert_allclose(cov, cov.T)
+        # Constant band has zero covariance
+        np.testing.assert_allclose(cov[2, :], 0.0, atol=1e-10)
+
+    def test_correlation(self):
+        cube = self._make_cube()
+        cor = correlation(cube)
+        # Perfectly correlated bands
+        assert cor[0, 1] == pytest.approx(1.0)
+        # Constant band → NaN
+        assert np.isnan(cor[2, 2])
+
+
+class TestNormalize:
+    def _make_cube(self):
+        data = np.zeros((2, 1, 4))
+        data[0, 0] = [0, 10, 20, 30]
+        data[1, 0] = [5, 5, 5, 5]
+        wl = np.array([400.0, 500.0])
+        return SpectralCube(data, wl)
+
+    def test_minmax(self):
+        cube = self._make_cube()
+        normed = normalize_minmax(cube)
+        d = normed.data()
+        np.testing.assert_allclose(d[0, 0], [0.0, 1 / 3, 2 / 3, 1.0])
+        # Constant band → 0
+        np.testing.assert_allclose(d[1, 0], [0.0, 0.0, 0.0, 0.0])
+
+    def test_zscore(self):
+        cube = self._make_cube()
+        normed = normalize_zscore(cube)
+        d = normed.data()
+        # Mean should be ~0
+        assert np.abs(d[0, 0].mean()) < 1e-10
+        # Constant band → 0
+        np.testing.assert_allclose(d[1, 0], [0.0, 0.0, 0.0, 0.0])
+
+    def test_nan_passthrough(self):
+        data = np.array([[[1.0, np.nan, 3.0]]])
+        cube = SpectralCube(data, np.array([500.0]))
+        normed = normalize_minmax(cube)
+        assert not np.isnan(normed.data()[0, 0, 0])
+        assert np.isnan(normed.data()[0, 0, 1])
+        assert not np.isnan(normed.data()[0, 0, 2])
+
+    def test_preserves_shape(self):
+        cube = self._make_cube()
+        assert normalize_minmax(cube).shape == cube.shape
+        assert normalize_zscore(cube).shape == cube.shape
+
+    def test_minmax_all_invalid_band(self):
+        # band 0: all NaN, band 1: valid
+        data = np.zeros((2, 1, 2))
+        data[0] = np.nan
+        data[1, 0] = [1.0, 3.0]
+        cube = SpectralCube(data, np.array([400.0, 500.0]))
+        normed = normalize_minmax(cube)
+        assert np.all(np.isnan(normed.data()[0]))
+        np.testing.assert_allclose(normed.data()[1, 0], [0.0, 1.0])
+
+    def test_zscore_all_invalid_band(self):
+        # band 0: all nodata, band 1: valid
+        data = np.zeros((2, 1, 2))
+        data[0] = -9999.0
+        data[1, 0] = [1.0, 3.0]
+        cube = SpectralCube(data, np.array([400.0, 500.0]), nodata=-9999.0)
+        normed = normalize_zscore(cube)
+        assert np.all(np.isnan(normed.data()[0]))
+        assert not np.any(np.isnan(normed.data()[1]))
+
+
+class TestDerivative:
+    def test_first_order_linear(self):
+        wl = np.array([400.0, 500.0, 600.0, 700.0])
+        data = np.zeros((4, 1, 1))
+        for b in range(4):
+            data[b, 0, 0] = 2.0 * wl[b]
+        cube = SpectralCube(data, wl)
+        d1 = derivative(cube, 1)
+        assert d1.bands == 3
+        np.testing.assert_allclose(d1.data()[:, 0, 0], [2.0, 2.0, 2.0])
+
+    def test_second_order_quadratic(self):
+        wl = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        data = (wl ** 2).reshape(5, 1, 1)
+        cube = SpectralCube(data, wl)
+        d2 = derivative(cube, 2)
+        assert d2.bands == 3
+        np.testing.assert_allclose(d2.data()[:, 0, 0], [2.0, 2.0, 2.0])
+
+    def test_midpoint_wavelengths(self):
+        wl = np.array([400.0, 500.0, 700.0])
+        data = np.zeros((3, 1, 1))
+        cube = SpectralCube(data, wl)
+        d1 = derivative(cube, 1)
+        np.testing.assert_allclose(d1.wavelengths(), [450.0, 600.0])
+
+    def test_invalid_order(self):
+        data = np.zeros((3, 1, 1))
+        cube = SpectralCube(data, np.array([400.0, 500.0, 600.0]))
+        with pytest.raises(ValueError):
+            derivative(cube, 0)
+        with pytest.raises(ValueError):
+            derivative(cube, 3)
+
+    def test_nan_propagation(self):
+        data = np.zeros((3, 1, 2))
+        data[:, 0, 0] = [1, np.nan, 3]
+        data[:, 0, 1] = [1, 2, 3]
+        cube = SpectralCube(data, np.array([400.0, 500.0, 600.0]))
+        d1 = derivative(cube, 1)
+        assert np.isnan(d1.data()[0, 0, 0])
+        assert not np.isnan(d1.data()[0, 0, 1])
+
+    def test_nodata_propagation(self):
+        data = np.zeros((3, 1, 2))
+        data[:, 0, 0] = [1, -9999, 3]
+        data[:, 0, 1] = [1, 2, 3]
+        cube = SpectralCube(data, np.array([400.0, 500.0, 600.0]), nodata=-9999.0)
+        d1 = derivative(cube, 1)
+        assert np.isnan(d1.data()[0, 0, 0])
+        assert np.isnan(d1.data()[1, 0, 0])
+        assert not np.isnan(d1.data()[0, 0, 1])
+        # Derivative output drops nodata metadata
+        assert d1.nodata is None
+
+    def test_nonuniform_wavelengths(self):
+        wl = np.array([400.0, 500.0, 700.0])
+        data = np.array([100.0, 200.0, 500.0]).reshape(3, 1, 1)
+        cube = SpectralCube(data, wl)
+        d1 = derivative(cube, 1)
+        # d[0] = (200-100)/100 = 1.0, d[1] = (500-200)/200 = 1.5
+        np.testing.assert_allclose(d1.data()[:, 0, 0], [1.0, 1.5])
+        np.testing.assert_allclose(d1.wavelengths(), [450.0, 600.0])
+
+
+class TestSavitzkyGolay:
+    def _make_cube(self, n_bands=20):
+        wl = np.linspace(400, 800, n_bands)
+        data = np.ones((n_bands, 1, 1))
+        return SpectralCube(data, wl)
+
+    def test_flat_preserved(self):
+        cube = self._make_cube()
+        smooth = savitzky_golay(cube, 5, 2)
+        np.testing.assert_allclose(smooth.data()[:, 0, 0], 1.0, atol=1e-10)
+
+    def test_reduces_noise(self):
+        wl = np.linspace(400, 800, 20)
+        rng = np.random.default_rng(42)
+        noise = rng.normal(0, 0.1, 20)
+        data = (1.0 + noise).reshape(20, 1, 1)
+        cube = SpectralCube(data, wl)
+        smooth = savitzky_golay(cube, 5, 2)
+        orig_var = np.var(data[:, 0, 0] - 1.0)
+        smooth_var = np.var(smooth.data()[:, 0, 0] - 1.0)
+        assert smooth_var < orig_var
+
+    def test_preserves_shape(self):
+        cube = self._make_cube()
+        smooth = savitzky_golay(cube, 5, 2)
+        assert smooth.shape == cube.shape
+        np.testing.assert_array_equal(smooth.wavelengths(), cube.wavelengths())
+
+    def test_invalid_params(self):
+        cube = self._make_cube()
+        with pytest.raises(ValueError):
+            savitzky_golay(cube, 4, 2)  # even window
+        with pytest.raises(ValueError):
+            savitzky_golay(cube, 5, 5)  # polyorder >= window
+        with pytest.raises(ValueError):
+            savitzky_golay(cube, 21, 2)  # window > bands
+
+    def test_nan_pixel(self):
+        wl = np.linspace(400, 800, 10)
+        data = np.ones((10, 1, 2))
+        data[3, 0, 0] = np.nan
+        cube = SpectralCube(data, wl)
+        smooth = savitzky_golay(cube, 5, 2)
+        assert all(np.isnan(smooth.data()[b, 0, 0]) for b in range(10))
+        assert all(not np.isnan(smooth.data()[b, 0, 1]) for b in range(10))

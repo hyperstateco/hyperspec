@@ -3,14 +3,18 @@ use numpy::{PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray3};
 use pyo3::prelude::*;
 
 use hyperspec::{
-    EnviWriteDataType, EnviWriteOptions, Interleave, MnfResult, PcaResult, ResampleMethod,
-    SpectralCube, ZarrCompression, ZarrReadOptions, ZarrWriteOptions, band_ratio as rs_band_ratio,
-    continuum_removal as rs_continuum_removal, mnf as rs_mnf, mnf_denoise as rs_mnf_denoise,
-    ndvi as rs_ndvi, normalized_difference as rs_normalized_difference, pca as rs_pca,
+    BandStats, EnviWriteDataType, EnviWriteOptions, Interleave, MnfResult, PcaResult,
+    ResampleMethod, SpectralCube, ZarrCompression, ZarrReadOptions, ZarrWriteOptions,
+    band_ratio as rs_band_ratio, band_stats as rs_band_stats,
+    continuum_removal as rs_continuum_removal, correlation as rs_correlation,
+    covariance as rs_covariance, derivative as rs_derivative, mnf as rs_mnf,
+    mnf_denoise as rs_mnf_denoise, ndvi as rs_ndvi,
+    normalize_minmax as rs_normalize_minmax, normalize_zscore as rs_normalize_zscore,
+    normalized_difference as rs_normalized_difference, pca as rs_pca,
     pca_inverse as rs_pca_inverse, pca_transform as rs_pca_transform, read_envi as rs_read_envi,
     read_zarr as rs_read_zarr, read_zarr_window as rs_read_zarr_window,
     read_zarr_with_options as rs_read_zarr_with_options, resample as rs_resample, sam as rs_sam,
-    write_envi_with_options as rs_write_envi_with_options,
+    savitzky_golay as rs_savitzky_golay, write_envi_with_options as rs_write_envi_with_options,
     write_zarr_with_options as rs_write_zarr_with_options, zarr_cube_shape as rs_zarr_cube_shape,
 };
 
@@ -382,6 +386,92 @@ fn resample(
     Ok(PySpectralCube { inner })
 }
 
+// --- Stats + Preprocessing functions ---
+
+/// Python wrapper around `hyperspec::BandStats`.
+#[pyclass(name = "BandStats", frozen)]
+struct PyBandStats {
+    inner: BandStats,
+}
+
+#[pymethods]
+impl PyBandStats {
+    fn min<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_owned_array(py, self.inner.min.clone())
+    }
+
+    fn max<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_owned_array(py, self.inner.max.clone())
+    }
+
+    fn mean<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_owned_array(py, self.inner.mean.clone())
+    }
+
+    fn std<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_owned_array(py, self.inner.std.clone())
+    }
+
+    fn valid_count<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u64>> {
+        numpy::PyArray1::from_owned_array(py, self.inner.valid_count.clone())
+    }
+
+    fn __repr__(&self) -> String {
+        format!("BandStats(bands={})", self.inner.mean.len())
+    }
+}
+
+#[pyfunction]
+fn band_stats(cube: &PySpectralCube) -> PyBandStats {
+    PyBandStats {
+        inner: rs_band_stats(&cube.inner),
+    }
+}
+
+#[pyfunction]
+fn covariance<'py>(
+    py: Python<'py>,
+    cube: &PySpectralCube,
+) -> Bound<'py, PyArray2<f64>> {
+    PyArray2::from_owned_array(py, rs_covariance(&cube.inner))
+}
+
+#[pyfunction]
+fn correlation<'py>(
+    py: Python<'py>,
+    cube: &PySpectralCube,
+) -> Bound<'py, PyArray2<f64>> {
+    PyArray2::from_owned_array(py, rs_correlation(&cube.inner))
+}
+
+#[pyfunction]
+fn normalize_minmax(cube: &PySpectralCube) -> PyResult<PySpectralCube> {
+    let inner = rs_normalize_minmax(&cube.inner).map_err(to_value_err)?;
+    Ok(PySpectralCube { inner })
+}
+
+#[pyfunction]
+fn normalize_zscore(cube: &PySpectralCube) -> PyResult<PySpectralCube> {
+    let inner = rs_normalize_zscore(&cube.inner).map_err(to_value_err)?;
+    Ok(PySpectralCube { inner })
+}
+
+#[pyfunction]
+fn derivative(cube: &PySpectralCube, order: usize) -> PyResult<PySpectralCube> {
+    let inner = rs_derivative(&cube.inner, order).map_err(to_value_err)?;
+    Ok(PySpectralCube { inner })
+}
+
+#[pyfunction]
+fn savitzky_golay(
+    cube: &PySpectralCube,
+    window: usize,
+    polyorder: usize,
+) -> PyResult<PySpectralCube> {
+    let inner = rs_savitzky_golay(&cube.inner, window, polyorder).map_err(to_value_err)?;
+    Ok(PySpectralCube { inner })
+}
+
 // --- I/O functions ---
 
 #[pyfunction]
@@ -514,6 +604,7 @@ fn _hyperspec(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySpectralCube>()?;
     m.add_class::<PyPcaResult>()?;
     m.add_class::<PyMnfResult>()?;
+    m.add_class::<PyBandStats>()?;
     m.add_function(wrap_pyfunction!(sam, m)?)?;
     m.add_function(wrap_pyfunction!(continuum_removal, m)?)?;
     m.add_function(wrap_pyfunction!(normalized_difference, m)?)?;
@@ -525,6 +616,13 @@ fn _hyperspec(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mnf, m)?)?;
     m.add_function(wrap_pyfunction!(mnf_denoise, m)?)?;
     m.add_function(wrap_pyfunction!(resample, m)?)?;
+    m.add_function(wrap_pyfunction!(band_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(covariance, m)?)?;
+    m.add_function(wrap_pyfunction!(correlation, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize_minmax, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize_zscore, m)?)?;
+    m.add_function(wrap_pyfunction!(derivative, m)?)?;
+    m.add_function(wrap_pyfunction!(savitzky_golay, m)?)?;
     m.add_function(wrap_pyfunction!(read_envi, m)?)?;
     m.add_function(wrap_pyfunction!(write_envi, m)?)?;
     m.add_function(wrap_pyfunction!(read_zarr, m)?)?;
