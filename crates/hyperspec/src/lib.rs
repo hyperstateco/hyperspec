@@ -6,6 +6,7 @@ pub mod error;
 pub mod io;
 
 pub use algorithms::continuum::continuum_removal;
+pub use algorithms::derivative::derivative;
 pub use algorithms::indices::{band_ratio, ndvi, normalized_difference};
 pub use algorithms::mnf::{MnfResult, mnf, mnf_denoise};
 pub use algorithms::normalize::{normalize_minmax, normalize_zscore};

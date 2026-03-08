@@ -1,4 +1,5 @@
 pub mod continuum;
+pub mod derivative;
 pub mod indices;
 pub mod mnf;
 pub mod normalize;
