@@ -35,7 +35,7 @@ cargo add hyperspec
 or
 ```toml
 [dependencies]
-hyperspec = "0.6"
+hyperspec = "0.7"
 ```
 
 ## Quickstart
@@ -45,6 +45,7 @@ import numpy as np
 from hyperspec import (
     SpectralCube, read_envi, write_zarr, read_zarr_window, zarr_cube_shape,
     sam, continuum_removal, pca, mnf_denoise,
+    band_stats, normalize_zscore, savitzky_golay, derivative,
 )
 
 # --- I/O ---
@@ -57,18 +58,30 @@ cr_cube = continuum_removal(cube)
 denoised = mnf_denoise(cube, n_components=20)
 
 # Write to Zarr with ML-friendly chunks
-write_zarr(cube, "chips.zarr", chunk_shape=(cube.bands(), 256, 256))
+write_zarr(cube, "chips.zarr", chunk_shape=(cube.bands, 256, 256))
 
 # Read a single training tile without loading the full cube
 tile = read_zarr_window(
     "chips.zarr",
-    bands=(0, cube.bands()),
+    bands=(0, cube.bands),
     rows=(0, 256),
     cols=(0, 256),
 )
 
 # Query shape without loading data
 bands, lines, samples = zarr_cube_shape("chips.zarr")
+
+# --- Preprocessing ---
+
+# Per-band statistics
+stats = band_stats(cube)        # .mean, .std, .min, .max, .valid_count
+
+# Normalize for ML training
+normed = normalize_zscore(cube)
+
+# Smooth noisy spectra, then compute derivatives
+smooth = savitzky_golay(cube, window=7, polyorder=2)
+d1 = derivative(smooth, order=1)
 
 # --- Spectral analysis ---
 
@@ -129,6 +142,18 @@ pca_result = pca(cube, n_components=10)
 | Operation | Function |
 |---|---|
 | Continuum removal | `continuum_removal(cube)` |
+| Savitzky-Golay smoothing | `savitzky_golay(cube, window, polyorder)` |
+| Derivative spectra | `derivative(cube, order)` |
+| Min-max normalization | `normalize_minmax(cube)` |
+| Z-score normalization | `normalize_zscore(cube)` |
+
+### Statistics
+
+| Operation | Function |
+|---|---|
+| Per-band stats | `band_stats(cube)` → `BandStats` |
+| Covariance matrix | `covariance(cube)` |
+| Correlation matrix | `correlation(cube)` |
 
 ### Spectral indices
 
@@ -168,7 +193,11 @@ crates/hyperspec/           # Pure Rust library → crates.io
         ├── indices.rs
         ├── pca.rs
         ├── mnf.rs
-        └── resample.rs
+        ├── resample.rs
+        ├── stats.rs
+        ├── normalize.rs
+        ├── derivative.rs
+        └── smooth.rs
 
 pyo3-hyperspec/             # PyO3 bindings → PyPI: hyperspec-py
 ├── src/lib.rs

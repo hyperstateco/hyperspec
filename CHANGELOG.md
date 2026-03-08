@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+- **Statistics**: `band_stats` (per-band min/max/mean/std/valid_count), `covariance`, `correlation` — Welford's algorithm, rayon-parallel, NaN/nodata-aware, population normalization
+- **Normalization**: `normalize_minmax`, `normalize_zscore` — per-band scaling with non-finite stat guards for all-invalid bands
+- **Derivative spectra**: `derivative(cube, order)` — 1st/2nd order finite differences at midpoint wavelengths; nodata metadata dropped from output
+- **Savitzky-Golay smoothing**: `savitzky_golay(cube, window, polyorder)` — index-space SG filter with mirror-reflection boundaries, no external deps
+- **Python bindings**: `BandStats` class, all new functions exposed via PyO3
+
 ## 0.6.1
 
 - **Fix**: build wheels against numpy 2.x C ABI for runtime compatibility with numpy 2.x
