@@ -20,7 +20,7 @@ pub fn savitzky_golay(
     window: usize,
     polyorder: usize,
 ) -> Result<SpectralCube> {
-    if window < 3 || window % 2 == 0 {
+    if window < 3 || window.is_multiple_of(2) {
         return Err(HyperspecError::InvalidInput(format!(
             "window must be odd and ≥ 3, got {}",
             window
