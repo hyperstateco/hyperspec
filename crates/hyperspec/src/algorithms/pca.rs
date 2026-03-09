@@ -1,4 +1,4 @@
-use ndarray::{Array1, Array2, Array3, Axis, s};
+use ndarray::{Array1, Array2, Array3, s};
 use rayon::prelude::*;
 
 use crate::cube::SpectralCube;
