@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2
+
+- **Fix**: MNF `noise_cov^{-1/2}` was computing `noise_cov^{-1}`, producing incorrect eigenvalues (transforms and roundtrips were unaffected)
+- **Perf**: replace Jacobi eigendecomposition with `faer` in PCA and MNF (~7x faster PCA, ~3x faster MNF)
+- **Perf**: fuse stats and transform in `normalize_minmax` and `normalize_zscore` (~7x faster)
+- **Perf**: eliminate intermediate allocations in `normalized_difference`, `band_ratio`, `derivative` (~5-8x faster)
+- **Perf**: reuse buffers in `continuum_removal`, replace triple-nested unpacking in `savitzky_golay`, `resample`, `sam`
+
 ## 0.7.1
 
 - **Type stubs**: `.pyi` file with full signatures, return types, and docstrings for all classes and functions — enables IDE autocomplete and mypy support

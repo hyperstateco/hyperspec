@@ -205,7 +205,7 @@ pyo3-hyperspec/             # PyO3 bindings → PyPI: hyperspec-py
     └── __init__.py
 ```
 
-- **Rust 2024 edition**, using `ndarray`, `rayon`, `zarrs`, `thiserror`
+- **Rust 2024 edition**, using `ndarray`, `rayon`, `faer`, `zarrs`, `thiserror`
 - **Minimal system dependencies** — no LAPACK or GDAL
 - **Python 3.12+**, NumPy bindings via PyO3
 
