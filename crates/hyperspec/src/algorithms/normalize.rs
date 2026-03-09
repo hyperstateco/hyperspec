@@ -32,8 +32,12 @@ pub fn normalize_minmax(cube: &SpectralCube) -> Result<SpectralCube> {
                 if v.is_nan() || nodata == Some(v) {
                     continue;
                 }
-                if v < mn { mn = v; }
-                if v > mx { mx = v; }
+                if v < mn {
+                    mn = v;
+                }
+                if v > mx {
+                    mx = v;
+                }
             }
             let range = mx - mn;
 

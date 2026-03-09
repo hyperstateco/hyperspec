@@ -287,10 +287,10 @@ pub fn pca_inverse(scores: &Array3<f64>, pca_result: &PcaResult) -> Result<Spect
 /// where eigenvectors are columns of the returned ndarray matrix.
 pub(crate) fn faer_sym_eigen(matrix: &faer::Mat<f64>) -> Result<(Vec<f64>, Array2<f64>)> {
     let n = matrix.nrows();
-    let decomp = matrix.as_ref().self_adjoint_eigen(faer::Side::Lower)
-        .map_err(|_| HyperspecError::InvalidInput(
-            "eigendecomposition failed".to_string()
-        ))?;
+    let decomp = matrix
+        .as_ref()
+        .self_adjoint_eigen(faer::Side::Lower)
+        .map_err(|_| HyperspecError::InvalidInput("eigendecomposition failed".to_string()))?;
     let s = decomp.S();
     let u = decomp.U();
     let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
