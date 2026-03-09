@@ -30,14 +30,17 @@ pub fn continuum_removal(cube: &SpectralCube) -> Result<SpectralCube> {
         .as_slice()
         .expect("wavelengths contiguous after as_standard_layout");
 
-    // Compute per-row in parallel, collecting row buffers,
-    // then scatter into band-first output.
+    // Process per-row in parallel. Each row reuses spectrum/hull/continuum buffers
+    // across all pixels, avoiding per-pixel allocations.
     let row_bufs: Vec<Vec<f64>> = (0..height)
         .into_par_iter()
         .map(|row| {
             let mut row_data = vec![0.0; bands * width];
+            let mut spectrum = vec![0.0f64; bands];
+            let mut hull_indices: Vec<usize> = Vec::with_capacity(bands);
+            let mut continuum = vec![0.0f64; bands];
+
             for col in 0..width {
-                let mut spectrum = vec![0.0; bands];
                 let mut has_invalid = false;
                 for b in 0..bands {
                     let v = data[[b, row, col]];
@@ -53,12 +56,12 @@ pub fn continuum_removal(cube: &SpectralCube) -> Result<SpectralCube> {
                         row_data[b * width + col] = f64::NAN;
                     }
                 } else {
-                    let hull = upper_convex_hull(wl_slice, &spectrum);
+                    upper_convex_hull_into(wl_slice, &spectrum, &mut hull_indices, &mut continuum);
                     for b in 0..bands {
-                        row_data[b * width + col] = if hull[b] == 0.0 {
+                        row_data[b * width + col] = if continuum[b] == 0.0 {
                             0.0
                         } else {
-                            spectrum[b] / hull[b]
+                            spectrum[b] / continuum[b]
                         };
                     }
                 }
@@ -67,8 +70,6 @@ pub fn continuum_removal(cube: &SpectralCube) -> Result<SpectralCube> {
         })
         .collect();
 
-    // Assemble into (bands, height, width) — row_data is laid out as
-    // [band0_col0, band0_col1, ..., band1_col0, ...], matching the output stride.
     let band_size = height * width;
     let mut flat = vec![0.0f64; bands * band_size];
     for (row, row_data) in row_bufs.iter().enumerate() {
@@ -90,53 +91,64 @@ pub fn continuum_removal(cube: &SpectralCube) -> Result<SpectralCube> {
     )
 }
 
+/// Compute the upper convex hull envelope into pre-allocated buffers.
+///
+/// `hull_indices` and `continuum` are cleared and reused to avoid per-pixel allocation.
+fn upper_convex_hull_into(
+    wavelengths: &[f64],
+    spectrum: &[f64],
+    hull_indices: &mut Vec<usize>,
+    continuum: &mut [f64],
+) {
+    let n = wavelengths.len();
+    if n == 0 {
+        return;
+    }
+    if n == 1 {
+        continuum[0] = spectrum[0];
+        return;
+    }
+
+    // Find upper convex hull vertices (indices).
+    hull_indices.clear();
+    for i in 0..n {
+        while hull_indices.len() >= 2 {
+            let a = hull_indices[hull_indices.len() - 2];
+            let b = hull_indices[hull_indices.len() - 1];
+            let cross = (wavelengths[b] - wavelengths[a]) * (spectrum[i] - spectrum[a])
+                - (spectrum[b] - spectrum[a]) * (wavelengths[i] - wavelengths[a]);
+            if cross >= 0.0 {
+                hull_indices.pop();
+            } else {
+                break;
+            }
+        }
+        hull_indices.push(i);
+    }
+
+    // Linearly interpolate between hull vertices to get continuum at every band
+    let mut seg = 0;
+    for i in 0..n {
+        while seg + 1 < hull_indices.len() - 1 && i > hull_indices[seg + 1] {
+            seg += 1;
+        }
+        let left = hull_indices[seg];
+        let right = hull_indices[seg + 1];
+        let t = (wavelengths[i] - wavelengths[left]) / (wavelengths[right] - wavelengths[left]);
+        continuum[i] = spectrum[left] + t * (spectrum[right] - spectrum[left]);
+    }
+}
+
 /// Compute the upper convex hull envelope interpolated at each wavelength.
 ///
 /// Uses the standard monotone chain algorithm on (wavelength, reflectance)
 /// points to find the upper hull vertices, then linearly interpolates
 /// between them to get the continuum value at every band.
+#[cfg(test)]
 fn upper_convex_hull(wavelengths: &[f64], spectrum: &[f64]) -> Vec<f64> {
-    let n = wavelengths.len();
-    if n == 0 {
-        return vec![];
-    }
-    if n == 1 {
-        return spectrum.to_vec();
-    }
-
-    // Find upper convex hull vertices (indices).
-    let mut hull: Vec<usize> = Vec::with_capacity(n);
-    for i in 0..n {
-        while hull.len() >= 2 {
-            let a = hull[hull.len() - 2];
-            let b = hull[hull.len() - 1];
-            // Cross product: positive means i is above the line a→b,
-            // so b is not on the upper hull — remove it.
-            let cross = (wavelengths[b] - wavelengths[a]) * (spectrum[i] - spectrum[a])
-                - (spectrum[b] - spectrum[a]) * (wavelengths[i] - wavelengths[a]);
-            if cross >= 0.0 {
-                hull.pop();
-            } else {
-                break;
-            }
-        }
-        hull.push(i);
-    }
-
-    // Linearly interpolate between hull vertices to get continuum at every band
-    let mut continuum = vec![0.0; n];
-    let mut seg = 0;
-    for i in 0..n {
-        // Advance to the correct hull segment
-        while seg + 1 < hull.len() - 1 && i > hull[seg + 1] {
-            seg += 1;
-        }
-        let left = hull[seg];
-        let right = hull[seg + 1];
-        let t = (wavelengths[i] - wavelengths[left]) / (wavelengths[right] - wavelengths[left]);
-        continuum[i] = spectrum[left] + t * (spectrum[right] - spectrum[left]);
-    }
-
+    let mut hull_indices = Vec::with_capacity(wavelengths.len());
+    let mut continuum = vec![0.0; wavelengths.len()];
+    upper_convex_hull_into(wavelengths, spectrum, &mut hull_indices, &mut continuum);
     continuum
 }
 
