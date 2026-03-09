@@ -177,15 +177,21 @@ fn mnf_core(cube: &SpectralCube, n_components: usize) -> Result<MnfInternals> {
         ));
     }
 
-    // Build noise_cov^{-1/2} and noise_cov^{1/2} from the eigendecomposition
+    // Build noise_cov^{-1/2} = V @ diag(1/λ^{1/4}) @ diag(1/λ^{1/4}) @ V^T
+    //   = V @ diag(1/√λ) @ V^T
+    // and noise_cov^{1/2} = V @ diag(λ^{1/4}) @ diag(λ^{1/4}) @ V^T
+    //   = V @ diag(√λ) @ V^T
+    //
+    // We compute V @ diag(scale) @ V^T as (V * scale_col) @ V^T,
+    // where scale_col broadcasts the per-column scale across rows.
     let mut inv_scaled = Array2::<f64>::zeros((bands, n_valid));
     let mut fwd_scaled = Array2::<f64>::zeros((bands, n_valid));
     let mut col_idx = 0;
     for k in 0..bands {
         let lam = noise_eigenvalues[k];
         if lam > 1e-12 {
-            let inv_scale = 1.0 / lam.sqrt();
-            let fwd_scale = lam.sqrt();
+            let inv_scale = 1.0 / lam.powf(0.25);
+            let fwd_scale = lam.powf(0.25);
             for i in 0..bands {
                 inv_scaled[[i, col_idx]] = noise_eigenvectors[[i, k]] * inv_scale;
                 fwd_scaled[[i, col_idx]] = noise_eigenvectors[[i, k]] * fwd_scale;
