@@ -1,7 +1,6 @@
-use ndarray::Array3;
+use ndarray::{Array3, s};
 use rayon::prelude::*;
 
-use crate::algorithms::stats::band_stats;
 use crate::cube::SpectralCube;
 use crate::error::Result;
 
@@ -12,25 +11,53 @@ use crate::error::Result;
 /// Invalid pixels (NaN or nodata) are written as NaN in the output;
 /// the original nodata metadata is preserved for downstream I/O.
 pub fn normalize_minmax(cube: &SpectralCube) -> Result<SpectralCube> {
-    let stats = band_stats(cube);
-    let mins = stats.min.as_slice().unwrap();
-    let maxs = stats.max.as_slice().unwrap();
+    let data = cube.data();
+    let bands = cube.bands();
+    let height = cube.height();
+    let width = cube.width();
+    let nodata = cube.nodata();
+    let band_size = height * width;
 
-    // Precompute per-band scale factors
-    let params: Vec<(f64, f64)> = (0..cube.bands())
-        .map(|b| {
-            let range = maxs[b] - mins[b];
-            (mins[b], range)
-        })
-        .collect();
+    let mut flat = vec![0.0f64; bands * band_size];
 
-    apply_per_band(cube, &params, |v, &(mn, range)| {
-        if !range.is_finite() || range == 0.0 {
-            0.0
-        } else {
-            (v - mn) / range
-        }
-    })
+    flat.par_chunks_mut(band_size)
+        .enumerate()
+        .for_each(|(b, band_out)| {
+            let band_in = data.slice(s![b, .., ..]);
+
+            // Pass 1: compute min/max (band data enters cache)
+            let mut mn = f64::INFINITY;
+            let mut mx = f64::NEG_INFINITY;
+            for &v in band_in.iter() {
+                if v.is_nan() || nodata == Some(v) {
+                    continue;
+                }
+                if v < mn { mn = v; }
+                if v > mx { mx = v; }
+            }
+            let range = mx - mn;
+
+            // Pass 2: normalize (band data still hot in cache)
+            for (o, &v) in band_out.iter_mut().zip(band_in.iter()) {
+                *o = if v.is_nan() || nodata == Some(v) {
+                    f64::NAN
+                } else if !range.is_finite() || range == 0.0 {
+                    0.0
+                } else {
+                    (v - mn) / range
+                };
+            }
+        });
+
+    let result = Array3::from_shape_vec((bands, height, width), flat)
+        .expect("shape matches total element count");
+
+    SpectralCube::new(
+        result,
+        cube.wavelengths().clone(),
+        cube.fwhm().cloned(),
+        cube.nodata(),
+    )
 }
 
 /// Per-band z-score normalization: `(x - mean) / std`.
@@ -40,60 +67,65 @@ pub fn normalize_minmax(cube: &SpectralCube) -> Result<SpectralCube> {
 /// Invalid pixels (NaN or nodata) are written as NaN in the output;
 /// the original nodata metadata is preserved for downstream I/O.
 pub fn normalize_zscore(cube: &SpectralCube) -> Result<SpectralCube> {
-    let stats = band_stats(cube);
-    let means = stats.mean.as_slice().unwrap();
-    let stds = stats.std.as_slice().unwrap();
-
-    let params: Vec<(f64, f64)> = (0..cube.bands()).map(|b| (means[b], stds[b])).collect();
-
-    apply_per_band(cube, &params, |v, &(mu, sigma)| {
-        if !sigma.is_finite() || sigma == 0.0 {
-            0.0
-        } else {
-            (v - mu) / sigma
-        }
-    })
-}
-
-/// Apply a per-band transformation with precomputed parameters.
-/// NaN and nodata pixels produce NaN.
-fn apply_per_band<P, F>(cube: &SpectralCube, params: &[P], f: F) -> Result<SpectralCube>
-where
-    P: Sync,
-    F: Fn(f64, &P) -> f64 + Sync,
-{
     let data = cube.data();
     let bands = cube.bands();
     let height = cube.height();
     let width = cube.width();
     let nodata = cube.nodata();
+    let band_size = height * width;
 
-    let rows: Vec<Vec<f64>> = (0..height)
-        .into_par_iter()
-        .map(|row| {
-            let mut row_data = vec![0.0; bands * width];
-            for col in 0..width {
-                for b in 0..bands {
-                    let v = data[[b, row, col]];
-                    row_data[b * width + col] = if v.is_nan() || nodata == Some(v) {
-                        f64::NAN
-                    } else {
-                        f(v, &params[b])
-                    };
+    let mut flat = vec![0.0f64; bands * band_size];
+
+    flat.par_chunks_mut(band_size)
+        .enumerate()
+        .for_each(|(b, band_out)| {
+            let band_in = data.slice(s![b, .., ..]);
+
+            // Pass 1: compute mean
+            let mut sum = 0.0;
+            let mut count = 0u64;
+            for &v in band_in.iter() {
+                if v.is_nan() || nodata == Some(v) {
+                    continue;
                 }
+                sum += v;
+                count += 1;
             }
-            row_data
-        })
-        .collect();
 
-    let mut result = Array3::<f64>::zeros((bands, height, width));
-    for (row, row_data) in rows.iter().enumerate() {
-        for b in 0..bands {
-            for col in 0..width {
-                result[[b, row, col]] = row_data[b * width + col];
+            if count == 0 {
+                for o in band_out.iter_mut() {
+                    *o = f64::NAN;
+                }
+                return;
             }
-        }
-    }
+
+            let mean = sum / count as f64;
+
+            // Pass 2: compute std deviation
+            let mut sq_sum = 0.0;
+            for &v in band_in.iter() {
+                if v.is_nan() || nodata == Some(v) {
+                    continue;
+                }
+                let d = v - mean;
+                sq_sum += d * d;
+            }
+            let sigma = (sq_sum / count as f64).sqrt();
+
+            // Pass 3: normalize (band data still hot in cache)
+            for (o, &v) in band_out.iter_mut().zip(band_in.iter()) {
+                *o = if v.is_nan() || nodata == Some(v) {
+                    f64::NAN
+                } else if !sigma.is_finite() || sigma == 0.0 {
+                    0.0
+                } else {
+                    (v - mean) / sigma
+                };
+            }
+        });
+
+    let result = Array3::from_shape_vec((bands, height, width), flat)
+        .expect("shape matches total element count");
 
     SpectralCube::new(
         result,
