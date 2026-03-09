@@ -355,38 +355,53 @@ fn estimate_noise_covariance(cube: &SpectralCube) -> Array2<f64> {
     let height = cube.height();
     let width = cube.width();
 
-    // Each row contributes a partial (bands, bands) covariance matrix
-    let row_covs: Vec<Array2<f64>> = (0..height)
+    // Accumulate upper-triangle partial sums per row, avoiding per-row Array2 allocations.
+    let tri_size = bands * (bands + 1) / 2;
+
+    let row_tris: Vec<Vec<f64>> = (0..height)
         .into_par_iter()
         .map(|row| {
-            let mut cov = Array2::<f64>::zeros((bands, bands));
+            let mut tri = vec![0.0; tri_size];
+            let mut diff = vec![0.0; bands];
             for col in 0..(width - 1) {
+                for b in 0..bands {
+                    diff[b] = data[[b, row, col + 1]] - data[[b, row, col]];
+                }
+                let mut idx = 0;
                 for i in 0..bands {
-                    let di = data[[i, row, col + 1]] - data[[i, row, col]];
                     for j in i..bands {
-                        let dj = data[[j, row, col + 1]] - data[[j, row, col]];
-                        let v = di * dj;
-                        cov[[i, j]] += v;
-                        if i != j {
-                            cov[[j, i]] += v;
-                        }
+                        tri[idx] += diff[i] * diff[j];
+                        idx += 1;
                     }
                 }
             }
-            cov
+            tri
         })
         .collect();
 
-    // Sum partial covariances
+    // Sum partial results and build symmetric covariance matrix
     let mut total = Array2::<f64>::zeros((bands, bands));
-    for cov in &row_covs {
-        total += cov;
-    }
-
     let n_diffs = height * (width - 1);
     let n_f = (n_diffs - 1).max(1) as f64;
-    // Divide by 2 because var(a - b) = var(a) + var(b) = 2 * var(noise)
-    total / (2.0 * n_f)
+    let scale = 1.0 / (2.0 * n_f);
+
+    for tri in &row_tris {
+        let mut idx = 0;
+        for i in 0..bands {
+            for j in i..bands {
+                total[[i, j]] += tri[idx];
+                idx += 1;
+            }
+        }
+    }
+    for i in 0..bands {
+        for j in i..bands {
+            total[[i, j]] *= scale;
+            total[[j, i]] = total[[i, j]];
+        }
+    }
+
+    total
 }
 
 #[cfg(test)]
