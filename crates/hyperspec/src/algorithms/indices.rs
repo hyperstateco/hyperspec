@@ -1,5 +1,4 @@
-use ndarray::Array2;
-use rayon::prelude::*;
+use ndarray::{Array2, Zip, s};
 
 use crate::cube::SpectralCube;
 use crate::error::{HyperspecError, Result};
@@ -18,30 +17,41 @@ pub fn normalized_difference(
     validate_band(cube, band_b)?;
 
     let data = cube.data();
-    let height = cube.height();
-    let width = cube.width();
     let nodata = cube.nodata();
+    let slice_a = data.slice(s![band_a, .., ..]);
+    let slice_b = data.slice(s![band_b, .., ..]);
 
-    let rows: Vec<Vec<f64>> = (0..height)
-        .into_par_iter()
-        .map(|row| {
-            let mut row_result = vec![0.0; width];
-            for col in 0..width {
-                let a = data[[band_a, row, col]];
-                let b = data[[band_b, row, col]];
-                row_result[col] = if is_invalid(a, nodata) || is_invalid(b, nodata) {
+    let mut result = Array2::<f64>::uninit(slice_a.raw_dim());
+
+    if let Some(nd) = nodata {
+        // Slow path: must check nodata per pixel
+        Zip::from(result.view_mut())
+            .and(&slice_a)
+            .and(&slice_b)
+            .for_each(|r, &a, &b| {
+                r.write(if a == nd || b == nd || a.is_nan() || b.is_nan() {
                     f64::NAN
                 } else {
                     let sum = a + b;
                     if sum == 0.0 { 0.0 } else { (a - b) / sum }
-                };
-            }
-            row_result
-        })
-        .collect();
+                });
+            });
+    } else {
+        // Fast path: NaN propagates naturally through arithmetic.
+        // Only need explicit check for a + b == 0.
+        Zip::from(result.view_mut())
+            .and(&slice_a)
+            .and(&slice_b)
+            .for_each(|r, &a, &b| {
+                let sum = a + b;
+                // NaN + anything = NaN, so sum.is_nan covers NaN inputs.
+                // sum == 0.0 is the only non-NaN special case.
+                r.write(if sum == 0.0 { 0.0 } else { (a - b) / sum });
+            });
+    }
 
-    let flat: Vec<f64> = rows.into_iter().flatten().collect();
-    Ok(Array2::from_shape_vec((height, width), flat).expect("shape is correct"))
+    // SAFETY: every element was written by the Zip above
+    Ok(unsafe { result.assume_init() })
 }
 
 /// Compute the ratio of two bands: A / B.
@@ -54,34 +64,39 @@ pub fn band_ratio(cube: &SpectralCube, band_a: usize, band_b: usize) -> Result<A
     validate_band(cube, band_b)?;
 
     let data = cube.data();
-    let height = cube.height();
-    let width = cube.width();
     let nodata = cube.nodata();
+    let slice_a = data.slice(s![band_a, .., ..]);
+    let slice_b = data.slice(s![band_b, .., ..]);
 
-    let rows: Vec<Vec<f64>> = (0..height)
-        .into_par_iter()
-        .map(|row| {
-            let mut row_result = vec![0.0; width];
-            for col in 0..width {
-                let a = data[[band_a, row, col]];
-                let b = data[[band_b, row, col]];
-                row_result[col] = if is_invalid(a, nodata) || is_invalid(b, nodata) {
+    let mut result = Array2::<f64>::uninit(slice_a.raw_dim());
+
+    if let Some(nd) = nodata {
+        // Slow path: must check nodata per pixel
+        Zip::from(result.view_mut())
+            .and(&slice_a)
+            .and(&slice_b)
+            .for_each(|r, &a, &b| {
+                r.write(if a == nd || b == nd || a.is_nan() || b.is_nan() {
                     f64::NAN
+                } else if b == 0.0 {
+                    0.0
                 } else {
-                    if b == 0.0 { 0.0 } else { a / b }
-                };
-            }
-            row_result
-        })
-        .collect();
+                    a / b
+                });
+            });
+    } else {
+        // Fast path: NaN propagates naturally through division (NaN/x = NaN, x/NaN = NaN).
+        // Only need explicit check for b == 0.
+        Zip::from(result.view_mut())
+            .and(&slice_a)
+            .and(&slice_b)
+            .for_each(|r, &a, &b| {
+                r.write(if b == 0.0 { 0.0 } else { a / b });
+            });
+    }
 
-    let flat: Vec<f64> = rows.into_iter().flatten().collect();
-    Ok(Array2::from_shape_vec((height, width), flat).expect("shape is correct"))
-}
-
-#[inline]
-fn is_invalid(v: f64, nodata: Option<f64>) -> bool {
-    v.is_nan() || nodata == Some(v)
+    // SAFETY: every element was written by the Zip above
+    Ok(unsafe { result.assume_init() })
 }
 
 /// Convenience function for NDVI: normalized_difference(cube, nir_band, red_band).
