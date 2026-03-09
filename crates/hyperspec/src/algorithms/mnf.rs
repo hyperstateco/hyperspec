@@ -4,6 +4,8 @@ use rayon::prelude::*;
 use crate::cube::SpectralCube;
 use crate::error::{HyperspecError, Result};
 
+use super::pca::faer_sym_eigen_ndarray;
+
 /// Result of an MNF computation.
 #[derive(Debug, Clone)]
 pub struct MnfResult {
@@ -32,33 +34,6 @@ struct MnfInternals {
     noise_sqrt: Array2<f64>,
     /// Mean spectrum subtracted before MNF.
     mean: Array1<f64>,
-}
-
-/// Eigendecompose a symmetric ndarray matrix using faer.
-/// Returns (eigenvalues, eigenvectors) where eigenvectors are columns.
-fn faer_eigen(matrix: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>)> {
-    let n = matrix.nrows();
-    // Build row-major slice for faer
-    let mut data = vec![0.0f64; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            data[i * n + j] = matrix[[i, j]];
-        }
-    }
-    let mat = faer::MatRef::from_row_major_slice(&data, n, n);
-    let decomp = mat.self_adjoint_eigen(faer::Side::Lower)
-        .map_err(|_| HyperspecError::InvalidInput("eigendecomposition failed".to_string()))?;
-
-    let s = decomp.S();
-    let u = decomp.U();
-    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
-    let mut eigenvectors = Array2::<f64>::zeros((n, n));
-    for i in 0..n {
-        for j in 0..n {
-            eigenvectors[[i, j]] = u[(i, j)];
-        }
-    }
-    Ok((eigenvalues, eigenvectors))
 }
 
 /// Shared MNF computation: validates input, estimates covariances, and
@@ -192,7 +167,7 @@ fn mnf_core(cube: &SpectralCube, n_components: usize) -> Result<MnfInternals> {
     };
 
     // Eigendecompose noise covariance via faer
-    let (noise_eigenvalues, noise_eigenvectors) = faer_eigen(&noise_cov)?;
+    let (noise_eigenvalues, noise_eigenvectors) = faer_sym_eigen_ndarray(&noise_cov)?;
 
     // Check that noise has non-trivial eigenvalues
     let n_valid = noise_eigenvalues.iter().filter(|&&v| v > 1e-12).count();
@@ -225,7 +200,7 @@ fn mnf_core(cube: &SpectralCube, n_components: usize) -> Result<MnfInternals> {
     let whitened_cov = noise_inv_sqrt.dot(&data_cov).dot(&noise_inv_sqrt);
 
     // Eigendecompose the whitened covariance via faer
-    let (eigenvalues, whitened_eigenvectors) = faer_eigen(&whitened_cov)?;
+    let (eigenvalues, whitened_eigenvectors) = faer_sym_eigen_ndarray(&whitened_cov)?;
 
     // Sort by descending eigenvalue
     let mut sorted_indices: Vec<usize> = (0..bands).collect();

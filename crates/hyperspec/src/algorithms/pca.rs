@@ -143,21 +143,7 @@ pub fn pca(cube: &SpectralCube, n_components: Option<usize>) -> Result<PcaResult
             }
         }
     }
-    let eigendecomp = cov_faer.as_ref().self_adjoint_eigen(faer::Side::Lower)
-        .map_err(|_| HyperspecError::InvalidInput(
-            "eigendecomposition failed".to_string()
-        ))?;
-    // faer returns eigenvalues in nondecreasing order
-    let s = eigendecomp.S();
-    let u = eigendecomp.U();
-
-    let eigenvalues: Vec<f64> = (0..bands).map(|i| s[i]).collect();
-    let mut eigenvectors = Array2::<f64>::zeros((bands, bands));
-    for i in 0..bands {
-        for j in 0..bands {
-            eigenvectors[[i, j]] = u[(i, j)];
-        }
-    }
+    let (eigenvalues, eigenvectors) = faer_sym_eigen(&cov_faer)?;
 
     // Sort by descending eigenvalue (NaN sorts last)
     let mut indices: Vec<usize> = (0..bands).collect();
@@ -293,6 +279,43 @@ pub fn pca_inverse(scores: &Array3<f64>, pca_result: &PcaResult) -> Result<Spect
     }
 
     SpectralCube::new(result, pca_result.wavelengths.clone(), None, None)
+}
+
+/// Eigendecompose a symmetric matrix using faer.
+///
+/// Accepts either an ndarray `Array2` or a faer `Mat`. Returns (eigenvalues, eigenvectors)
+/// where eigenvectors are columns of the returned ndarray matrix.
+pub(crate) fn faer_sym_eigen(matrix: &faer::Mat<f64>) -> Result<(Vec<f64>, Array2<f64>)> {
+    let n = matrix.nrows();
+    let decomp = matrix.as_ref().self_adjoint_eigen(faer::Side::Lower)
+        .map_err(|_| HyperspecError::InvalidInput(
+            "eigendecomposition failed".to_string()
+        ))?;
+    let s = decomp.S();
+    let u = decomp.U();
+    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
+    let mut eigenvectors = Array2::<f64>::zeros((n, n));
+    for i in 0..n {
+        for j in 0..n {
+            eigenvectors[[i, j]] = u[(i, j)];
+        }
+    }
+    Ok((eigenvalues, eigenvectors))
+}
+
+/// Convert an ndarray `Array2` to a faer `Mat` and eigendecompose.
+pub(crate) fn faer_sym_eigen_ndarray(matrix: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>)> {
+    let n = matrix.nrows();
+    let mut data = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            data[i * n + j] = matrix[[i, j]];
+        }
+    }
+    let mat = faer::MatRef::from_row_major_slice(&data, n, n);
+    // Copy into owned Mat since self_adjoint_eigen needs it
+    let owned: faer::Mat<f64> = mat.to_owned();
+    faer_sym_eigen(&owned)
 }
 
 /// Jacobi eigenvalue algorithm for a symmetric matrix.
