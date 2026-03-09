@@ -1,10 +1,8 @@
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array1, Array2, s};
 use rayon::prelude::*;
 
 use crate::cube::SpectralCube;
 use crate::error::{HyperspecError, Result};
-
-use super::pca::jacobi_eigen;
 
 /// Result of an MNF computation.
 #[derive(Debug, Clone)]
@@ -34,6 +32,33 @@ struct MnfInternals {
     noise_sqrt: Array2<f64>,
     /// Mean spectrum subtracted before MNF.
     mean: Array1<f64>,
+}
+
+/// Eigendecompose a symmetric ndarray matrix using faer.
+/// Returns (eigenvalues, eigenvectors) where eigenvectors are columns.
+fn faer_eigen(matrix: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>)> {
+    let n = matrix.nrows();
+    // Build row-major slice for faer
+    let mut data = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            data[i * n + j] = matrix[[i, j]];
+        }
+    }
+    let mat = faer::MatRef::from_row_major_slice(&data, n, n);
+    let decomp = mat.self_adjoint_eigen(faer::Side::Lower)
+        .map_err(|_| HyperspecError::InvalidInput("eigendecomposition failed".to_string()))?;
+
+    let s = decomp.S();
+    let u = decomp.U();
+    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
+    let mut eigenvectors = Array2::<f64>::zeros((n, n));
+    for i in 0..n {
+        for j in 0..n {
+            eigenvectors[[i, j]] = u[(i, j)];
+        }
+    }
+    Ok((eigenvalues, eigenvectors))
 }
 
 /// Shared MNF computation: validates input, estimates covariances, and
@@ -66,39 +91,108 @@ fn mnf_core(cube: &SpectralCube, n_components: usize) -> Result<MnfInternals> {
     let data = cube.data();
     let nodata = cube.nodata();
 
-    // Reshape to (n_pixels, bands), rejecting NaN and nodata
-    let mut pixels = Array2::<f64>::zeros((n_pixels, bands));
-    for row in 0..height {
-        for col in 0..width {
-            let px = row * width + col;
-            for b in 0..bands {
-                let v = data[[b, row, col]];
-                if v.is_nan() || nodata == Some(v) {
-                    return Err(HyperspecError::InvalidInput(
-                        "MNF input contains NaN or nodata values; mask or remove them first"
-                            .to_string(),
-                    ));
-                }
-                pixels[[px, b]] = v;
+    // Validate and compute mean per band
+    let mut mean = Array1::<f64>::zeros(bands);
+    for b in 0..bands {
+        let band_slice = data.slice(s![b, .., ..]);
+        let mut sum = 0.0;
+        for &v in band_slice.iter() {
+            if v.is_nan() || nodata == Some(v) {
+                return Err(HyperspecError::InvalidInput(
+                    "MNF input contains NaN or nodata values; mask or remove them first"
+                        .to_string(),
+                ));
             }
+            sum += v;
         }
-    }
-
-    // Compute mean and center
-    let mean = pixels.mean_axis(Axis(0)).expect("pixels is non-empty");
-    for mut row in pixels.rows_mut() {
-        row -= &mean;
+        mean[b] = sum / n_pixels as f64;
     }
 
     // Estimate noise covariance using horizontal spatial differences
     let noise_cov = estimate_noise_covariance(cube);
 
-    // Data covariance
+    // Compute data covariance via tiled GEMM (same approach as PCA)
     let n_f = (n_pixels - 1).max(1) as f64;
-    let data_cov = pixels.t().dot(&pixels) / n_f;
+    let data_cov = if n_pixels <= 32768 {
+        // Small: scalar triangle accumulation
+        let tri_size = bands * (bands + 1) / 2;
+        let mut tri = vec![0.0; tri_size];
+        let mut centered = vec![0.0; bands];
+        for row in 0..height {
+            for col in 0..width {
+                for b in 0..bands {
+                    centered[b] = data[[b, row, col]] - mean[b];
+                }
+                let mut idx = 0;
+                for i in 0..bands {
+                    for j in i..bands {
+                        tri[idx] += centered[i] * centered[j];
+                        idx += 1;
+                    }
+                }
+            }
+        }
+        let mut cov = Array2::<f64>::zeros((bands, bands));
+        let inv_n = 1.0 / n_f;
+        let mut idx = 0;
+        for i in 0..bands {
+            for j in i..bands {
+                let v = tri[idx] * inv_n;
+                cov[[i, j]] = v;
+                cov[[j, i]] = v;
+                idx += 1;
+            }
+        }
+        cov
+    } else {
+        // Large: tiled GEMM via faer
+        let tile_size = 32768;
+        let mut cov_faer = faer::Mat::<f64>::zeros(bands, bands);
+        let mut tile_buf = vec![0.0f64; tile_size * bands];
 
-    // Eigendecompose noise covariance
-    let (noise_eigenvalues, noise_eigenvectors) = jacobi_eigen(&noise_cov);
+        for tile_start in (0..n_pixels).step_by(tile_size) {
+            let tile_end = (tile_start + tile_size).min(n_pixels);
+            let rows_in_tile = tile_end - tile_start;
+
+            for b in 0..bands {
+                let band_slice = data.slice(s![b, .., ..]);
+                let band_data = band_slice.as_standard_layout();
+                let band_raw = band_data.as_slice().expect("band is contiguous");
+                let col_start = b * tile_size;
+                let mean_b = mean[b];
+                for i in 0..rows_in_tile {
+                    tile_buf[col_start + i] = band_raw[tile_start + i] - mean_b;
+                }
+            }
+
+            let tile = faer::MatRef::from_column_major_slice(
+                &tile_buf[..rows_in_tile * bands],
+                rows_in_tile,
+                bands,
+            );
+
+            faer::linalg::matmul::matmul(
+                cov_faer.as_mut(),
+                faer::Accum::Add,
+                tile.transpose(),
+                tile,
+                1.0,
+                faer::Par::rayon(0),
+            );
+        }
+
+        let inv_n = 1.0 / n_f;
+        let mut cov = Array2::<f64>::zeros((bands, bands));
+        for i in 0..bands {
+            for j in 0..bands {
+                cov[[i, j]] = cov_faer[(i, j)] * inv_n;
+            }
+        }
+        cov
+    };
+
+    // Eigendecompose noise covariance via faer
+    let (noise_eigenvalues, noise_eigenvectors) = faer_eigen(&noise_cov)?;
 
     // Check that noise has non-trivial eigenvalues
     let n_valid = noise_eigenvalues.iter().filter(|&&v| v > 1e-12).count();
@@ -130,8 +224,8 @@ fn mnf_core(cube: &SpectralCube, n_components: usize) -> Result<MnfInternals> {
     // Whitened covariance: noise_cov^{-1/2} * data_cov * noise_cov^{-1/2}
     let whitened_cov = noise_inv_sqrt.dot(&data_cov).dot(&noise_inv_sqrt);
 
-    // Eigendecompose the whitened covariance
-    let (eigenvalues, whitened_eigenvectors) = jacobi_eigen(&whitened_cov);
+    // Eigendecompose the whitened covariance via faer
+    let (eigenvalues, whitened_eigenvectors) = faer_eigen(&whitened_cov)?;
 
     // Sort by descending eigenvalue
     let mut sorted_indices: Vec<usize> = (0..bands).collect();
@@ -255,14 +349,17 @@ pub fn mnf_denoise(cube: &SpectralCube, n_components: usize) -> Result<SpectralC
         })
         .collect();
 
-    let mut out = ndarray::Array3::<f64>::zeros((bands, height, width));
+    let band_size = height * width;
+    let mut flat = vec![0.0f64; bands * band_size];
     for (row, row_data) in rows.iter().enumerate() {
         for b in 0..bands {
-            for col in 0..width {
-                out[[b, row, col]] = row_data[b * width + col];
-            }
+            let src = &row_data[b * width..(b + 1) * width];
+            let dst_start = b * band_size + row * width;
+            flat[dst_start..dst_start + width].copy_from_slice(src);
         }
     }
+    let out = ndarray::Array3::from_shape_vec((bands, height, width), flat)
+        .expect("shape matches total element count");
 
     SpectralCube::new(
         out,

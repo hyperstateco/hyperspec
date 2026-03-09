@@ -299,7 +299,8 @@ pub fn pca_inverse(scores: &Array3<f64>, pca_result: &PcaResult) -> Result<Spect
 ///
 /// Returns (eigenvalues, eigenvectors) where eigenvectors are columns of the
 /// returned matrix.
-pub(crate) fn jacobi_eigen(matrix: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
+#[cfg(test)]
+fn jacobi_eigen(matrix: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
     let n = matrix.nrows();
     assert_eq!(n, matrix.ncols(), "matrix must be square");
 
