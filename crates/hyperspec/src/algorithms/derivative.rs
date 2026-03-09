@@ -1,4 +1,4 @@
-use ndarray::Array3;
+use ndarray::{Array3, s};
 use rayon::prelude::*;
 
 use crate::cube::SpectralCube;
@@ -57,34 +57,26 @@ fn derivative_first(cube: &SpectralCube) -> Result<SpectralCube> {
         .collect();
     let mid_wl: Vec<f64> = (0..out_bands).map(|i| (wl[i] + wl[i + 1]) * 0.5).collect();
 
-    let rows: Vec<Vec<f64>> = (0..height)
-        .into_par_iter()
-        .map(|row| {
-            let mut row_data = vec![0.0; out_bands * width];
-            for col in 0..width {
-                for b in 0..out_bands {
-                    let v0 = data[[b, row, col]];
-                    let v1 = data[[b + 1, row, col]];
-                    row_data[b * width + col] =
-                        if v0.is_nan() || v1.is_nan() || nodata == Some(v0) || nodata == Some(v1) {
-                            f64::NAN
-                        } else {
-                            (v1 - v0) / dwl[b]
-                        };
-                }
-            }
-            row_data
-        })
-        .collect();
+    let band_size = height * width;
+    let mut flat = vec![0.0f64; out_bands * band_size];
 
-    let mut result = Array3::<f64>::zeros((out_bands, height, width));
-    for (row, row_data) in rows.iter().enumerate() {
-        for b in 0..out_bands {
-            for col in 0..width {
-                result[[b, row, col]] = row_data[b * width + col];
+    flat.par_chunks_mut(band_size)
+        .enumerate()
+        .for_each(|(b, band_out)| {
+            let band0 = data.slice(s![b, .., ..]);
+            let band1 = data.slice(s![b + 1, .., ..]);
+            let dw = dwl[b];
+            for ((o, &v0), &v1) in band_out.iter_mut().zip(band0.iter()).zip(band1.iter()) {
+                *o = if v0.is_nan() || v1.is_nan() || nodata == Some(v0) || nodata == Some(v1) {
+                    f64::NAN
+                } else {
+                    (v1 - v0) / dw
+                };
             }
-        }
-    }
+        });
+
+    let result = Array3::from_shape_vec((out_bands, height, width), flat)
+        .expect("shape matches total element count");
 
     SpectralCube::new(
         result,
