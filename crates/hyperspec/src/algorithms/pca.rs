@@ -1,4 +1,4 @@
-use ndarray::{Array1, Array2, Array3, s};
+use ndarray::{Array1, Array2, Array3, Axis};
 use rayon::prelude::*;
 
 use crate::cube::SpectralCube;
@@ -46,104 +46,40 @@ pub fn pca(cube: &SpectralCube, n_components: Option<usize>) -> Result<PcaResult
         )));
     }
 
-    // Validate no NaN/nodata, compute mean per band, and build covariance
-    // without materializing the full (n_pixels, bands) matrix.
+    // Reshape to (n_pixels, bands), rejecting NaN and nodata
     let data = cube.data();
     let nodata = cube.nodata();
-
-    // Check for invalid values and compute mean per band in one pass
-    let mut mean = Array1::<f64>::zeros(bands);
-    for b in 0..bands {
-        let band_slice = data.slice(s![b, .., ..]);
-        let mut sum = 0.0;
-        for &v in band_slice.iter() {
-            if v.is_nan() || nodata == Some(v) {
-                return Err(HyperspecError::InvalidInput(
-                    "PCA input contains NaN or nodata values; mask or remove them first"
-                        .to_string(),
-                ));
-            }
-            sum += v;
-        }
-        mean[b] = sum / n_pixels as f64;
-    }
-
-    let n_f = (n_pixels - 1).max(1) as f64;
-    let mut cov_faer = faer::Mat::<f64>::zeros(bands, bands);
-
-    // For small cubes, use scalar triangle accumulation (avoids tile/GEMM overhead).
-    // For large cubes, use tiled GEMM with faer's SIMD-optimized matmul.
-    if n_pixels <= 32768 {
-        let tri_size = bands * (bands + 1) / 2;
-        let mut tri = vec![0.0; tri_size];
-        let mut centered = vec![0.0; bands];
-        for row in 0..height {
-            for col in 0..width {
-                for b in 0..bands {
-                    centered[b] = data[[b, row, col]] - mean[b];
-                }
-                let mut idx = 0;
-                for i in 0..bands {
-                    for j in i..bands {
-                        tri[idx] += centered[i] * centered[j];
-                        idx += 1;
-                    }
-                }
-            }
-        }
-        let inv_n = 1.0 / n_f;
-        let mut idx = 0;
-        for i in 0..bands {
-            for j in i..bands {
-                let v = tri[idx] * inv_n;
-                cov_faer[(i, j)] = v;
-                cov_faer[(j, i)] = v;
-                idx += 1;
-            }
-        }
-    } else {
-        let tile_size = 32768;
-        let mut tile_buf = vec![0.0f64; tile_size * bands];
-
-        for tile_start in (0..n_pixels).step_by(tile_size) {
-            let tile_end = (tile_start + tile_size).min(n_pixels);
-            let rows_in_tile = tile_end - tile_start;
-
+    let mut pixels = Array2::<f64>::zeros((n_pixels, bands));
+    for row in 0..height {
+        for col in 0..width {
+            let px = row * width + col;
             for b in 0..bands {
-                let band_slice = data.slice(s![b, .., ..]);
-                let band_data = band_slice.as_standard_layout();
-                let band_raw = band_data.as_slice().expect("band is contiguous");
-                let col_start = b * tile_size;
-                let mean_b = mean[b];
-                for i in 0..rows_in_tile {
-                    tile_buf[col_start + i] = band_raw[tile_start + i] - mean_b;
+                let v = data[[b, row, col]];
+                if v.is_nan() || nodata == Some(v) {
+                    return Err(HyperspecError::InvalidInput(
+                        "PCA input contains NaN or nodata values; mask or remove them first"
+                            .to_string(),
+                    ));
                 }
-            }
-
-            let tile = faer::MatRef::from_column_major_slice(
-                &tile_buf[..rows_in_tile * bands],
-                rows_in_tile,
-                bands,
-            );
-
-            faer::linalg::matmul::matmul(
-                cov_faer.as_mut(),
-                faer::Accum::Add,
-                tile.transpose(),
-                tile,
-                1.0,
-                faer::Par::rayon(0),
-            );
-        }
-
-        let inv_n = 1.0 / n_f;
-        for j in 0..bands {
-            for i in 0..bands {
-                cov_faer[(i, j)] *= inv_n;
+                pixels[[px, b]] = v;
             }
         }
     }
-    let (eigenvalues, eigenvectors) = faer_sym_eigen(&cov_faer)?;
+
+    // Compute mean per band
+    let mean = pixels.mean_axis(Axis(0)).expect("pixels is non-empty");
+
+    // Center the data
+    for mut row in pixels.rows_mut() {
+        row -= &mean;
+    }
+
+    // Covariance matrix: (bands, bands) = X^T X / (n - 1)
+    let n_f = (n_pixels - 1).max(1) as f64;
+    let cov = pixels.t().dot(&pixels) / n_f;
+
+    // Eigendecomposition via Jacobi
+    let (eigenvalues, eigenvectors) = jacobi_eigen(&cov);
 
     // Sort by descending eigenvalue (NaN sorts last)
     let mut indices: Vec<usize> = (0..bands).collect();
@@ -281,49 +217,11 @@ pub fn pca_inverse(scores: &Array3<f64>, pca_result: &PcaResult) -> Result<Spect
     SpectralCube::new(result, pca_result.wavelengths.clone(), None, None)
 }
 
-/// Eigendecompose a symmetric matrix using faer.
-///
-/// Accepts either an ndarray `Array2` or a faer `Mat`. Returns (eigenvalues, eigenvectors)
-/// where eigenvectors are columns of the returned ndarray matrix.
-pub(crate) fn faer_sym_eigen(matrix: &faer::Mat<f64>) -> Result<(Vec<f64>, Array2<f64>)> {
-    let n = matrix.nrows();
-    let decomp = matrix.as_ref().self_adjoint_eigen(faer::Side::Lower)
-        .map_err(|_| HyperspecError::InvalidInput(
-            "eigendecomposition failed".to_string()
-        ))?;
-    let s = decomp.S();
-    let u = decomp.U();
-    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
-    let mut eigenvectors = Array2::<f64>::zeros((n, n));
-    for i in 0..n {
-        for j in 0..n {
-            eigenvectors[[i, j]] = u[(i, j)];
-        }
-    }
-    Ok((eigenvalues, eigenvectors))
-}
-
-/// Convert an ndarray `Array2` to a faer `Mat` and eigendecompose.
-pub(crate) fn faer_sym_eigen_ndarray(matrix: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>)> {
-    let n = matrix.nrows();
-    let mut data = vec![0.0f64; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            data[i * n + j] = matrix[[i, j]];
-        }
-    }
-    let mat = faer::MatRef::from_row_major_slice(&data, n, n);
-    // Copy into owned Mat since self_adjoint_eigen needs it
-    let owned: faer::Mat<f64> = mat.to_owned();
-    faer_sym_eigen(&owned)
-}
-
 /// Jacobi eigenvalue algorithm for a symmetric matrix.
 ///
 /// Returns (eigenvalues, eigenvectors) where eigenvectors are columns of the
 /// returned matrix.
-#[cfg(test)]
-fn jacobi_eigen(matrix: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
+pub(crate) fn jacobi_eigen(matrix: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
     let n = matrix.nrows();
     assert_eq!(n, matrix.ncols(), "matrix must be square");
 
