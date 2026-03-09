@@ -101,14 +101,17 @@ pub fn resample(
         })
         .collect();
 
-    let mut result = Array3::<f64>::zeros((n_target, height, width));
+    let band_size = height * width;
+    let mut flat = vec![0.0f64; n_target * band_size];
     for (row, row_data) in rows.iter().enumerate() {
         for t in 0..n_target {
-            for col in 0..width {
-                result[[t, row, col]] = row_data[t * width + col];
-            }
+            let src = &row_data[t * width..(t + 1) * width];
+            let dst_start = t * band_size + row * width;
+            flat[dst_start..dst_start + width].copy_from_slice(src);
         }
     }
+    let result = Array3::from_shape_vec((n_target, height, width), flat)
+        .expect("shape matches total element count");
 
     SpectralCube::new(result, target_wavelengths.clone(), None, cube.nodata())
 }

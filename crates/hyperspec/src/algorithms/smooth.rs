@@ -86,14 +86,17 @@ pub fn savitzky_golay(
         })
         .collect();
 
-    let mut result = Array3::<f64>::zeros((bands, height, width));
+    let band_size = height * width;
+    let mut flat = vec![0.0f64; bands * band_size];
     for (row, row_data) in rows.iter().enumerate() {
         for b in 0..bands {
-            for col in 0..width {
-                result[[b, row, col]] = row_data[b * width + col];
-            }
+            let src = &row_data[b * width..(b + 1) * width];
+            let dst_start = b * band_size + row * width;
+            flat[dst_start..dst_start + width].copy_from_slice(src);
         }
     }
+    let result = Array3::from_shape_vec((bands, height, width), flat)
+        .expect("shape matches total element count");
 
     SpectralCube::new(
         result,

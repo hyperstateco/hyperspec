@@ -49,11 +49,12 @@ pub fn sam(cube: &SpectralCube, reference: &Array1<f64>) -> Result<Array2<f64>> 
     let bands = cube.bands();
     let nodata = cube.nodata();
 
-    // Parallel per-row computation
-    let rows: Vec<Vec<f64>> = (0..height)
-        .into_par_iter()
-        .map(|row| {
-            let mut row_result = vec![0.0; width];
+    // Parallel per-row computation, writing directly into output.
+    let mut flat = vec![0.0f64; height * width];
+
+    flat.par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(row, row_out)| {
             for col in 0..width {
                 let mut pixel_dot_ref = 0.0;
                 let mut pixel_norm_sq = 0.0;
@@ -67,24 +68,20 @@ pub fn sam(cube: &SpectralCube, reference: &Array1<f64>) -> Result<Array2<f64>> 
                     pixel_dot_ref += v * ref_slice[b];
                     pixel_norm_sq += v * v;
                 }
-                if has_invalid {
-                    row_result[col] = f64::NAN;
+                row_out[col] = if has_invalid {
+                    f64::NAN
                 } else {
                     let pixel_norm = pixel_norm_sq.sqrt();
                     if pixel_norm == 0.0 {
-                        // Zero pixel → max angle
-                        row_result[col] = std::f64::consts::FRAC_PI_2;
+                        std::f64::consts::FRAC_PI_2
                     } else {
                         let cos_angle = (pixel_dot_ref / (pixel_norm * ref_norm)).clamp(-1.0, 1.0);
-                        row_result[col] = cos_angle.acos();
+                        cos_angle.acos()
                     }
-                }
+                };
             }
-            row_result
-        })
-        .collect();
+        });
 
-    let flat: Vec<f64> = rows.into_iter().flatten().collect();
     Ok(Array2::from_shape_vec((height, width), flat).expect("shape is correct"))
 }
 

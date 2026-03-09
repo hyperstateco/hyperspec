@@ -30,7 +30,9 @@ pub fn continuum_removal(cube: &SpectralCube) -> Result<SpectralCube> {
         .as_slice()
         .expect("wavelengths contiguous after as_standard_layout");
 
-    let rows: Vec<Vec<f64>> = (0..height)
+    // Compute per-row in parallel, collecting row buffers,
+    // then scatter into band-first output.
+    let row_bufs: Vec<Vec<f64>> = (0..height)
         .into_par_iter()
         .map(|row| {
             let mut row_data = vec![0.0; bands * width];
@@ -65,15 +67,20 @@ pub fn continuum_removal(cube: &SpectralCube) -> Result<SpectralCube> {
         })
         .collect();
 
-    // Reassemble into (bands, height, width)
-    let mut result = Array3::<f64>::zeros((bands, height, width));
-    for (row, row_data) in rows.iter().enumerate() {
+    // Assemble into (bands, height, width) — row_data is laid out as
+    // [band0_col0, band0_col1, ..., band1_col0, ...], matching the output stride.
+    let band_size = height * width;
+    let mut flat = vec![0.0f64; bands * band_size];
+    for (row, row_data) in row_bufs.iter().enumerate() {
         for b in 0..bands {
-            for col in 0..width {
-                result[[b, row, col]] = row_data[b * width + col];
-            }
+            let src = &row_data[b * width..(b + 1) * width];
+            let dst_start = b * band_size + row * width;
+            flat[dst_start..dst_start + width].copy_from_slice(src);
         }
     }
+
+    let result = Array3::from_shape_vec((bands, height, width), flat)
+        .expect("shape matches total element count");
 
     SpectralCube::new(
         result,
