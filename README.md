@@ -131,23 +131,7 @@ pca_result = pca(cube, n_components=10)
 
 ## Algorithms
 
-### Spectral similarity
-
-| Operation | Function |
-|---|---|
-| Spectral Angle Mapper | `sam(cube, reference)` |
-
-### Spectral preprocessing
-
-| Operation | Function |
-|---|---|
-| Continuum removal | `continuum_removal(cube)` |
-| Savitzky-Golay smoothing | `savitzky_golay(cube, window, polyorder)` |
-| Derivative spectra | `derivative(cube, order)` |
-| Min-max normalization | `normalize_minmax(cube)` |
-| Z-score normalization | `normalize_zscore(cube)` |
-
-### Statistics
+### Exploration
 
 | Operation | Function |
 |---|---|
@@ -155,27 +139,28 @@ pca_result = pca(cube, n_components=10)
 | Covariance matrix | `covariance(cube)` |
 | Correlation matrix | `correlation(cube)` |
 
-### Spectral indices
+### Preprocessing
 
 | Operation | Function |
 |---|---|
+| Savitzky-Golay smoothing | `savitzky_golay(cube, window, polyorder)` |
+| Derivative spectra | `derivative(cube, order)` |
+| Continuum removal | `continuum_removal(cube)` |
+| Min-max normalization | `normalize_minmax(cube)` |
+| Z-score normalization | `normalize_zscore(cube)` |
+| Resample | `resample(cube, target_wl, method)` |
+
+### Analysis
+
+| Operation | Function |
+|---|---|
+| Spectral Angle Mapper | `sam(cube, reference)` |
 | Normalized difference | `normalized_difference(cube, a, b)` |
 | Band ratio | `band_ratio(cube, a, b)` |
 | NDVI | `ndvi(cube, nir, red)` |
-
-### Dimensionality reduction
-
-| Operation | Function |
-|---|---|
 | PCA | `pca(cube, n_components)` |
 | MNF | `mnf(cube, n_components)` |
 | MNF denoise | `mnf_denoise(cube, n_components)` |
-
-### Spectral utilities
-
-| Operation | Function |
-|---|---|
-| Resample | `resample(cube, target_wl, method)` |
 
 ## Architecture
 

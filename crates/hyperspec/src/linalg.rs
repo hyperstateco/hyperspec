@@ -201,12 +201,11 @@ pub(crate) fn clean_covariance(
             // Band b occupies tile_buf[b * rows_in_tile .. (b+1) * rows_in_tile].
             // IMPORTANT: stride is b * rows_in_tile, NOT b * tile_size,
             // so the last tile (which may be smaller) is packed correctly.
-            for b in 0..bands {
+            for (b, &mean_b) in mean.iter().enumerate().take(bands) {
                 let band_slice = data.slice(s![b, .., ..]);
                 let band_data = band_slice.as_standard_layout();
                 let band_raw = band_data.as_slice().expect("band is contiguous");
                 let col_start = b * rows_in_tile;
-                let mean_b = mean[b];
                 for i in 0..rows_in_tile {
                     tile_buf[col_start + i] = band_raw[tile_start + i] - mean_b;
                 }
@@ -277,8 +276,6 @@ pub(crate) fn randomized_pca(
     mean: &[f64],
     n_pixels: usize,
     bands: usize,
-    height: usize,
-    width: usize,
     n_components: usize,
 ) -> Result<(Array1<f64>, Array2<f64>)> {
     use faer::linalg::solvers::Qr;
@@ -294,7 +291,7 @@ pub(crate) fn randomized_pca(
     // Y = A @ Omega, where A is the centered data matrix (n_pixels, bands)
     // and Omega is (bands, l). Y is (n_pixels, l).
     // Computed via tiled BSQ GEMM.
-    let y = tiled_bsq_gemm_right(data, mean, n_pixels, bands, height, width, &omega, l);
+    let y = tiled_bsq_gemm_right(data, mean, n_pixels, bands, &omega, l);
 
     // Thin QR of Y (n_pixels, l) -> Q (n_pixels, l)
     let y_faer = faer::MatRef::from_column_major_slice(&y, n_pixels, l);
@@ -303,7 +300,7 @@ pub(crate) fn randomized_pca(
 
     // B = Q^T @ A, shape (l, bands).
     // Computed via tiled BSQ GEMM.
-    let b = tiled_bsq_gemm_left_qt(data, mean, n_pixels, bands, height, width, &q_mat, l);
+    let b = tiled_bsq_gemm_left_qt(data, mean, n_pixels, bands, &q_mat, l);
 
     // Thin SVD of B (l, bands)
     let b_faer = faer::MatRef::from_column_major_slice(&b, l, bands);
@@ -384,7 +381,7 @@ fn box_muller_matrix(rows: usize, cols: usize) -> Vec<f64> {
     use std::f64::consts::TAU;
 
     let total = rows * cols;
-    let n_pairs = (total + 1) / 2;
+    let n_pairs = total.div_ceil(2);
     let mut out = Vec::with_capacity(total);
 
     let mut state = Xoshiro256StarStar::new(42);
@@ -448,8 +445,6 @@ fn tiled_bsq_gemm_right(
     mean: &[f64],
     n_pixels: usize,
     bands: usize,
-    _height: usize,
-    _width: usize,
     omega: &[f64], // column-major (bands, l)
     l: usize,
 ) -> Vec<f64> {
@@ -464,12 +459,11 @@ fn tiled_bsq_gemm_right(
         let rows_in_tile = tile_end - tile_start;
 
         // Fill tile: column-major (rows_in_tile, bands)
-        for b in 0..bands {
+        for (b, &mean_b) in mean.iter().enumerate().take(bands) {
             let band_slice = data.slice(s![b, .., ..]);
             let band_data = band_slice.as_standard_layout();
             let band_raw = band_data.as_slice().expect("band is contiguous");
             let col_start = b * rows_in_tile;
-            let mean_b = mean[b];
             for i in 0..rows_in_tile {
                 tile_buf[col_start + i] = band_raw[tile_start + i] - mean_b;
             }
@@ -514,8 +508,6 @@ fn tiled_bsq_gemm_left_qt(
     mean: &[f64],
     n_pixels: usize,
     bands: usize,
-    _height: usize,
-    _width: usize,
     q_mat: &faer::Mat<f64>, // (n_pixels, l)
     l: usize,
 ) -> Vec<f64> {
@@ -528,12 +520,11 @@ fn tiled_bsq_gemm_left_qt(
         let rows_in_tile = tile_end - tile_start;
 
         // Fill tile: column-major (rows_in_tile, bands)
-        for b in 0..bands {
+        for (b, &mean_b) in mean.iter().enumerate().take(bands) {
             let band_slice = data.slice(s![b, .., ..]);
             let band_data = band_slice.as_standard_layout();
             let band_raw = band_data.as_slice().expect("band is contiguous");
             let col_start = b * rows_in_tile;
-            let mean_b = mean[b];
             for i in 0..rows_in_tile {
                 tile_buf[col_start + i] = band_raw[tile_start + i] - mean_b;
             }

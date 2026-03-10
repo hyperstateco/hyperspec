@@ -77,7 +77,7 @@ pub fn pca(cube: &SpectralCube, n_components: Option<usize>) -> Result<PcaResult
 
     if use_randomized {
         let (explained_variance, components) =
-            linalg::randomized_pca(data, mean_slice, n_pixels, bands, height, width, n_comp)?;
+            linalg::randomized_pca(data, mean_slice, n_pixels, bands, n_comp)?;
 
         Ok(PcaResult {
             components,
