@@ -108,11 +108,8 @@ pub(crate) fn bsq_transform(
 
         // result_tile = t_faer @ x_tile^T = (out_dim, rows_in_tile) column-major
         let mut res_buf = vec![0.0f64; out_dim * rows_in_tile];
-        let mut res_tile = faer::MatMut::from_column_major_slice_mut(
-            &mut res_buf,
-            out_dim,
-            rows_in_tile,
-        );
+        let mut res_tile =
+            faer::MatMut::from_column_major_slice_mut(&mut res_buf, out_dim, rows_in_tile);
 
         faer::linalg::matmul::matmul(
             res_tile.as_mut(),
@@ -427,9 +424,7 @@ impl Xoshiro256StarStar {
     }
 
     fn next_u64(&mut self) -> u64 {
-        let result = (self.s[1].wrapping_mul(5))
-            .rotate_left(7)
-            .wrapping_mul(9);
+        let result = (self.s[1].wrapping_mul(5)).rotate_left(7).wrapping_mul(9);
         let t = self.s[1] << 17;
         self.s[2] ^= self.s[0];
         self.s[3] ^= self.s[1];

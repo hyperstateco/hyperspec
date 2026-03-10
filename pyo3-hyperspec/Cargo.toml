@@ -11,7 +11,7 @@ name = "_hyperspec"
 crate-type = ["cdylib"]
 
 [dependencies]
-hyperspec = { version = "0.7.2", path = "../crates/hyperspec" }
+hyperspec = { version = "0.7.3", path = "../crates/hyperspec" }
 ndarray = { workspace = true }
 numpy = "0.28"
 pyo3 = { version = "0.28", features = ["extension-module"] }

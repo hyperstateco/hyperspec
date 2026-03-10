@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3
+
+- **Perf**: MNF denoise, PCA transform/inverse use tiled GEMM instead of per-pixel loops
+- **Perf**: centralize linear algebra in `linalg.rs` — shared tiled covariance, eigendecomposition, BSQ-native transforms
+- **Fix**: covariance tile stride bug when n_pixels is not a multiple of tile size
+
 ## 0.7.2
 
 - **Fix**: MNF `noise_cov^{-1/2}` was computing `noise_cov^{-1}`, producing incorrect eigenvalues (transforms and roundtrips were unaffected)

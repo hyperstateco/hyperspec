@@ -548,12 +548,7 @@ mod tests {
                 .map(|(a, b)| a * b)
                 .sum::<f64>()
                 .abs();
-            assert!(
-                dot > 0.99,
-                "component {} alignment {:.4} < 0.99",
-                i,
-                dot
-            );
+            assert!(dot > 0.99, "component {} alignment {:.4} < 0.99", i, dot);
         }
     }
 
@@ -599,10 +594,6 @@ mod tests {
             }
         }
         let snr = 10.0 * (signal_power / error_power).log10();
-        assert!(
-            snr > 10.0,
-            "reconstruction SNR {:.1} dB < 10 dB",
-            snr
-        );
+        assert!(snr > 10.0, "reconstruction SNR {:.1} dB < 10 dB", snr);
     }
 }
