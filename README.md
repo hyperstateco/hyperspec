@@ -41,56 +41,41 @@ hyperspec = "0.7"
 ## Quickstart
 
 ```python
-import numpy as np
 from hyperspec import (
-    SpectralCube, read_envi, write_zarr, read_zarr_window, zarr_cube_shape,
-    sam, continuum_removal, pca, mnf_denoise,
-    band_stats, normalize_zscore, savitzky_golay, derivative,
+    read_envi, write_zarr, read_zarr_window,
+    band_stats, covariance,
+    mnf_denoise, savitzky_golay, derivative, continuum_removal, normalize_zscore,
+    sam, ndvi, pca,
 )
 
 # --- I/O ---
 
-# Read ENVI format (AVIRIS-NG, etc.)
 cube = read_envi("scene.hdr")
 
-# Process
-cr_cube = continuum_removal(cube)
-denoised = mnf_denoise(cube, n_components=20)
+# --- Exploration ---
 
-# Write to Zarr with ML-friendly chunks
-write_zarr(cube, "chips.zarr", chunk_shape=(cube.bands, 256, 256))
-
-# Read a single training tile without loading the full cube
-tile = read_zarr_window(
-    "chips.zarr",
-    bands=(0, cube.bands),
-    rows=(0, 256),
-    cols=(0, 256),
-)
-
-# Query shape without loading data
-bands, lines, samples = zarr_cube_shape("chips.zarr")
+stats = band_stats(cube)        # .mean, .std, .min, .max, .valid_count
+cov = covariance(cube)          # (bands, bands) covariance matrix
 
 # --- Preprocessing ---
 
-# Per-band statistics
-stats = band_stats(cube)        # .mean, .std, .min, .max, .valid_count
-
-# Normalize for ML training
-normed = normalize_zscore(cube)
-
-# Smooth noisy spectra, then compute derivatives
-smooth = savitzky_golay(cube, window=7, polyorder=2)
+clean = mnf_denoise(cube, n_components=20)  # denoise first
+smooth = savitzky_golay(clean, window=7, polyorder=2)
 d1 = derivative(smooth, order=1)
+cr = continuum_removal(clean)
+normed = normalize_zscore(clean)
 
-# --- Spectral analysis ---
+# --- Analysis ---
 
-# Compare every pixel to a reference spectrum
-reference = cube.spectrum(50, 50)
-angles = sam(cube, reference)
+reference = normed.spectrum(50, 50)
+angles = sam(normed, reference)             # spectral similarity
+veg = ndvi(normed, nir=90, red=55)          # vegetation index
+pca_result = pca(normed, n_components=10)   # dimensionality reduction
 
-# Dimensionality reduction
-pca_result = pca(cube, n_components=10)
+# --- Storage ---
+
+write_zarr(normed, "chips.zarr", chunk_shape=(normed.bands, 256, 256))
+tile = read_zarr_window("chips.zarr", bands=(0, normed.bands), rows=(0, 256), cols=(0, 256))
 ```
 
 ## SpectralCube
@@ -115,6 +100,7 @@ pca_result = pca(cube, n_components=10)
 | Zarr V3 | `read_zarr(path)` |
 | Zarr V3 | `read_zarr_with_options(path, ...)` |
 | Zarr V3 | `read_zarr_window(path, bands, rows, cols)` |
+| Zarr V3 | `zarr_cube_shape(path)` |
 
 ### Write
 
@@ -122,12 +108,6 @@ pca_result = pca(cube, n_components=10)
 |---|---|
 | ENVI | `write_envi(cube, path)` |
 | Zarr V3 | `write_zarr(cube, path)` |
-
-### Utilities
-
-| Format | Function |
-|---|---|
-| Zarr V3 | `zarr_cube_shape(path)` |
 
 ## Algorithms
 
@@ -143,6 +123,8 @@ pca_result = pca(cube, n_components=10)
 
 | Operation | Function |
 |---|---|
+| MNF denoise | `mnf_denoise(cube, n_components)` |
+| MNF | `mnf(cube, n_components)` |
 | Savitzky-Golay smoothing | `savitzky_golay(cube, window, polyorder)` |
 | Derivative spectra | `derivative(cube, order)` |
 | Continuum removal | `continuum_removal(cube)` |
@@ -159,8 +141,6 @@ pca_result = pca(cube, n_components=10)
 | Band ratio | `band_ratio(cube, a, b)` |
 | NDVI | `ndvi(cube, nir, red)` |
 | PCA | `pca(cube, n_components)` |
-| MNF | `mnf(cube, n_components)` |
-| MNF denoise | `mnf_denoise(cube, n_components)` |
 
 ## Architecture
 
@@ -172,6 +152,7 @@ crates/hyperspec/           # Pure Rust library → crates.io
     ├── io/
     │   ├── envi.rs         # ENVI read/write (BSQ, BIL, BIP)
     │   └── zarr.rs         # Zarr V3 read/write/window
+    ├── linalg.rs           # Matrix ops (faer): eigen, covariance, tiled GEMM
     └── algorithms/
         ├── sam.rs
         ├── continuum.rs
