@@ -8,6 +8,20 @@ permissions:
   id-token: write
 
 jobs:
+  publish-crates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish hyperspec to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked -p hyperspec
+      - name: Publish pyo3-hyperspec to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked -p pyo3-hyperspec
+
   build:
     strategy:
       matrix:
@@ -54,7 +68,7 @@ jobs:
           path: target/wheels/*.tar.gz
 
   publish:
-    needs: [build, sdist]
+    needs: [publish-crates, build, sdist]
     runs-on: ubuntu-latest
     environment: pypi
     steps:
