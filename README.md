@@ -17,7 +17,7 @@ hyperspec provides:
 - Fast Rust implementations of standard hyperspectral algorithms
 - A `SpectralCube` abstraction that keeps data, wavelengths, and metadata together
 - Zarr V3 storage with chunking optimized for ML dataloaders
-- Python bindings with zero-copy NumPy interop
+- Python bindings with efficient NumPy interop
 
 ## Install
 
