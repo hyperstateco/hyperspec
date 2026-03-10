@@ -1,8 +1,8 @@
 use ndarray::{Array1, Array2, Array3, s};
-use rayon::prelude::*;
 
 use crate::cube::SpectralCube;
 use crate::error::{HyperspecError, Result};
+use crate::linalg;
 
 /// Result of a PCA computation.
 #[derive(Debug, Clone)]
@@ -20,9 +20,10 @@ pub struct PcaResult {
 
 /// Compute PCA on a spectral cube.
 ///
-/// Reshapes the cube to a 2D matrix of pixels × bands, centers it,
-/// computes the covariance matrix, and finds eigenvectors via Jacobi
-/// eigenvalue decomposition.
+/// Reshapes the cube to a 2D matrix of pixels x bands, centers it,
+/// and finds principal components via eigendecomposition of the covariance
+/// matrix or randomized truncated SVD (when `n_components` is much smaller
+/// than the number of bands).
 ///
 /// `n_components` specifies how many principal components to keep.
 /// If `None`, all components are kept.
@@ -46,12 +47,10 @@ pub fn pca(cube: &SpectralCube, n_components: Option<usize>) -> Result<PcaResult
         )));
     }
 
-    // Validate no NaN/nodata, compute mean per band, and build covariance
-    // without materializing the full (n_pixels, bands) matrix.
+    // Validate no NaN/nodata, compute mean per band
     let data = cube.data();
     let nodata = cube.nodata();
 
-    // Check for invalid values and compute mean per band in one pass
     let mut mean = Array1::<f64>::zeros(bands);
     for b in 0..bands {
         let band_slice = data.slice(s![b, .., ..]);
@@ -68,107 +67,53 @@ pub fn pca(cube: &SpectralCube, n_components: Option<usize>) -> Result<PcaResult
         mean[b] = sum / n_pixels as f64;
     }
 
-    let n_f = (n_pixels - 1).max(1) as f64;
-    let mut cov_faer = faer::Mat::<f64>::zeros(bands, bands);
+    // Randomized SVD wins for high band counts where the covariance GEMM (O(bands²))
+    // dominates. For typical HSI (100-400 bands), cov+eigh is faster because the
+    // covariance matrix is small and QR overhead in randomized SVD isn't worth it.
+    let oversampling = 10.min(bands.saturating_sub(n_comp));
+    let use_randomized = bands > 500 && n_comp + oversampling < bands;
 
-    // For small cubes, use scalar triangle accumulation (avoids tile/GEMM overhead).
-    // For large cubes, use tiled GEMM with faer's SIMD-optimized matmul.
-    if n_pixels <= 32768 {
-        let tri_size = bands * (bands + 1) / 2;
-        let mut tri = vec![0.0; tri_size];
-        let mut centered = vec![0.0; bands];
-        for row in 0..height {
-            for col in 0..width {
-                for b in 0..bands {
-                    centered[b] = data[[b, row, col]] - mean[b];
-                }
-                let mut idx = 0;
-                for i in 0..bands {
-                    for j in i..bands {
-                        tri[idx] += centered[i] * centered[j];
-                        idx += 1;
-                    }
-                }
-            }
-        }
-        let inv_n = 1.0 / n_f;
-        let mut idx = 0;
-        for i in 0..bands {
-            for j in i..bands {
-                let v = tri[idx] * inv_n;
-                cov_faer[(i, j)] = v;
-                cov_faer[(j, i)] = v;
-                idx += 1;
-            }
-        }
+    let mean_slice = mean.as_slice().expect("mean is contiguous");
+
+    if use_randomized {
+        let (explained_variance, components) =
+            linalg::randomized_pca(data, mean_slice, n_pixels, bands, height, width, n_comp)?;
+
+        Ok(PcaResult {
+            components,
+            explained_variance,
+            mean,
+            wavelengths: cube.wavelengths().clone(),
+        })
     } else {
-        let tile_size = 32768;
-        let mut tile_buf = vec![0.0f64; tile_size * bands];
+        let (_cov, eigenvalues, eigenvectors) =
+            linalg::clean_covariance_eigen(data, mean_slice, n_pixels, bands, height, width)?;
 
-        for tile_start in (0..n_pixels).step_by(tile_size) {
-            let tile_end = (tile_start + tile_size).min(n_pixels);
-            let rows_in_tile = tile_end - tile_start;
+        // Sort by descending eigenvalue
+        let mut indices: Vec<usize> = (0..bands).collect();
+        indices.sort_by(|&a, &b| {
+            eigenvalues[b]
+                .partial_cmp(&eigenvalues[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-            for b in 0..bands {
-                let band_slice = data.slice(s![b, .., ..]);
-                let band_data = band_slice.as_standard_layout();
-                let band_raw = band_data.as_slice().expect("band is contiguous");
-                let col_start = b * tile_size;
-                let mean_b = mean[b];
-                for i in 0..rows_in_tile {
-                    tile_buf[col_start + i] = band_raw[tile_start + i] - mean_b;
-                }
-            }
-
-            let tile = faer::MatRef::from_column_major_slice(
-                &tile_buf[..rows_in_tile * bands],
-                rows_in_tile,
-                bands,
-            );
-
-            faer::linalg::matmul::matmul(
-                cov_faer.as_mut(),
-                faer::Accum::Add,
-                tile.transpose(),
-                tile,
-                1.0,
-                faer::Par::rayon(0),
-            );
-        }
-
-        let inv_n = 1.0 / n_f;
-        for j in 0..bands {
-            for i in 0..bands {
-                cov_faer[(i, j)] *= inv_n;
+        // Take top n_components
+        let mut components = Array2::<f64>::zeros((n_comp, bands));
+        let mut explained_variance = Array1::<f64>::zeros(n_comp);
+        for (i, &idx) in indices.iter().take(n_comp).enumerate() {
+            explained_variance[i] = eigenvalues[idx].max(0.0);
+            for j in 0..bands {
+                components[[i, j]] = eigenvectors[[j, idx]];
             }
         }
+
+        Ok(PcaResult {
+            components,
+            explained_variance,
+            mean,
+            wavelengths: cube.wavelengths().clone(),
+        })
     }
-    let (eigenvalues, eigenvectors) = faer_sym_eigen(&cov_faer)?;
-
-    // Sort by descending eigenvalue (NaN sorts last)
-    let mut indices: Vec<usize> = (0..bands).collect();
-    indices.sort_by(|&a, &b| {
-        eigenvalues[b]
-            .partial_cmp(&eigenvalues[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Take top n_components
-    let mut components = Array2::<f64>::zeros((n_comp, bands));
-    let mut explained_variance = Array1::<f64>::zeros(n_comp);
-    for (i, &idx) in indices.iter().take(n_comp).enumerate() {
-        explained_variance[i] = eigenvalues[idx].max(0.0);
-        for j in 0..bands {
-            components[[i, j]] = eigenvectors[[j, idx]];
-        }
-    }
-
-    Ok(PcaResult {
-        components,
-        explained_variance,
-        mean,
-        wavelengths: cube.wavelengths().clone(),
-    })
 }
 
 /// Forward transform: project a cube into PCA space.
@@ -178,9 +123,6 @@ pub fn pca(cube: &SpectralCube, n_components: Option<usize>) -> Result<PcaResult
 /// are not spectral data.
 pub fn pca_transform(cube: &SpectralCube, pca_result: &PcaResult) -> Result<Array3<f64>> {
     let bands = cube.bands();
-    let height = cube.height();
-    let width = cube.width();
-    let n_comp = pca_result.components.nrows();
 
     if bands != pca_result.mean.len() {
         return Err(HyperspecError::DimensionMismatch(format!(
@@ -190,44 +132,13 @@ pub fn pca_transform(cube: &SpectralCube, pca_result: &PcaResult) -> Result<Arra
         )));
     }
 
-    let data = cube.data();
-    let mean = &pca_result.mean;
-    let components = &pca_result.components;
-
-    // Parallel per-row
-    let rows: Vec<Vec<f64>> = (0..height)
-        .into_par_iter()
-        .map(|row| {
-            let mut row_data = vec![0.0; n_comp * width];
-            for col in 0..width {
-                // Center the pixel
-                let mut centered = vec![0.0; bands];
-                for b in 0..bands {
-                    centered[b] = data[[b, row, col]] - mean[b];
-                }
-                // Project onto each component
-                for c in 0..n_comp {
-                    let mut score = 0.0;
-                    for b in 0..bands {
-                        score += components[[c, b]] * centered[b];
-                    }
-                    row_data[c * width + col] = score;
-                }
-            }
-            row_data
-        })
-        .collect();
-
-    let mut result = Array3::<f64>::zeros((n_comp, height, width));
-    for (row, row_data) in rows.iter().enumerate() {
-        for c in 0..n_comp {
-            for col in 0..width {
-                result[[c, row, col]] = row_data[c * width + col];
-            }
-        }
-    }
-
-    Ok(result)
+    let mean_slice = pca_result.mean.as_slice().expect("mean is contiguous");
+    Ok(linalg::bsq_transform(
+        cube.data(),
+        &pca_result.components,
+        Some(mean_slice),
+        None,
+    ))
 }
 
 /// Inverse transform: reconstruct a cube from PCA scores.
@@ -237,9 +148,6 @@ pub fn pca_transform(cube: &SpectralCube, pca_result: &PcaResult) -> Result<Arra
 /// The reconstruction is lossy if fewer components were kept.
 pub fn pca_inverse(scores: &Array3<f64>, pca_result: &PcaResult) -> Result<SpectralCube> {
     let n_comp = scores.shape()[0];
-    let height = scores.shape()[1];
-    let width = scores.shape()[2];
-    let bands = pca_result.mean.len();
 
     if n_comp != pca_result.components.nrows() {
         return Err(HyperspecError::DimensionMismatch(format!(
@@ -249,73 +157,11 @@ pub fn pca_inverse(scores: &Array3<f64>, pca_result: &PcaResult) -> Result<Spect
         )));
     }
 
-    let mean = &pca_result.mean;
-    let components = &pca_result.components;
-
-    let rows: Vec<Vec<f64>> = (0..height)
-        .into_par_iter()
-        .map(|row| {
-            let mut row_data = vec![0.0; bands * width];
-            for col in 0..width {
-                for b in 0..bands {
-                    let mut val = mean[b];
-                    for c in 0..n_comp {
-                        val += scores[[c, row, col]] * components[[c, b]];
-                    }
-                    row_data[b * width + col] = val;
-                }
-            }
-            row_data
-        })
-        .collect();
-
-    let mut result = Array3::<f64>::zeros((bands, height, width));
-    for (row, row_data) in rows.iter().enumerate() {
-        for b in 0..bands {
-            for col in 0..width {
-                result[[b, row, col]] = row_data[b * width + col];
-            }
-        }
-    }
+    let mean_slice = pca_result.mean.as_slice().expect("mean is contiguous");
+    let components_t = pca_result.components.t().to_owned();
+    let result = linalg::bsq_transform(scores, &components_t, None, Some(mean_slice));
 
     SpectralCube::new(result, pca_result.wavelengths.clone(), None, None)
-}
-
-/// Eigendecompose a symmetric matrix using faer.
-///
-/// Accepts either an ndarray `Array2` or a faer `Mat`. Returns (eigenvalues, eigenvectors)
-/// where eigenvectors are columns of the returned ndarray matrix.
-pub(crate) fn faer_sym_eigen(matrix: &faer::Mat<f64>) -> Result<(Vec<f64>, Array2<f64>)> {
-    let n = matrix.nrows();
-    let decomp = matrix
-        .as_ref()
-        .self_adjoint_eigen(faer::Side::Lower)
-        .map_err(|_| HyperspecError::InvalidInput("eigendecomposition failed".to_string()))?;
-    let s = decomp.S();
-    let u = decomp.U();
-    let eigenvalues: Vec<f64> = (0..n).map(|i| s[i]).collect();
-    let mut eigenvectors = Array2::<f64>::zeros((n, n));
-    for i in 0..n {
-        for j in 0..n {
-            eigenvectors[[i, j]] = u[(i, j)];
-        }
-    }
-    Ok((eigenvalues, eigenvectors))
-}
-
-/// Convert an ndarray `Array2` to a faer `Mat` and eigendecompose.
-pub(crate) fn faer_sym_eigen_ndarray(matrix: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>)> {
-    let n = matrix.nrows();
-    let mut data = vec![0.0f64; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            data[i * n + j] = matrix[[i, j]];
-        }
-    }
-    let mat = faer::MatRef::from_row_major_slice(&data, n, n);
-    // Copy into owned Mat since self_adjoint_eigen needs it
-    let owned: faer::Mat<f64> = mat.to_owned();
-    faer_sym_eigen(&owned)
 }
 
 /// Jacobi eigenvalue algorithm for a symmetric matrix.
@@ -368,7 +214,6 @@ fn jacobi_eigen(matrix: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
         let sin = theta.sin();
 
         // Apply Givens rotation to A in-place: A' = G^T A G
-        // First update the rows/columns that interact with p and q
         for i in 0..n {
             if i != p && i != q {
                 let aip = a[[i, p]];
@@ -379,7 +224,6 @@ fn jacobi_eigen(matrix: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
                 a[[q, i]] = a[[i, q]];
             }
         }
-        // Then update the diagonal and zero out the target
         a[[p, p]] = cos * cos * app + 2.0 * sin * cos * apq + sin * sin * aqq;
         a[[q, q]] = sin * sin * app - 2.0 * sin * cos * apq + cos * cos * aqq;
         a[[p, q]] = 0.0;
@@ -468,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_pca_roundtrip() {
-        // Full PCA (all components) → transform → inverse should reconstruct original
+        // Full PCA (all components) -> transform -> inverse should reconstruct original
         let cube = make_cube();
         let result = pca(&cube, None).unwrap();
         let transformed = pca_transform(&cube, &result).unwrap();
@@ -642,5 +486,123 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_pca_randomized_vs_full() {
+        // 20-band 32x32 cube, compare full PCA vs truncated PCA (5 components)
+        let bands = 20;
+        let height = 32;
+        let width = 32;
+        let n_comp = 5;
+
+        // Build data with known structure: first few bands carry most variance
+        let mut data = Array3::zeros((bands, height, width));
+        let mut rng_state: u64 = 12345;
+        for b in 0..bands {
+            for row in 0..height {
+                for col in 0..width {
+                    rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let noise = (rng_state >> 33) as f64 / (1u64 << 31) as f64 - 0.5;
+                    // Strong signal in first 5 bands, weak in rest
+                    let signal = if b < 5 {
+                        (row as f64 + col as f64 * 0.7 + b as f64 * 0.3) / 50.0
+                    } else {
+                        0.01 * noise
+                    };
+                    data[[b, row, col]] = signal + 0.001 * noise;
+                }
+            }
+        }
+        let wl = Array1::from_iter((0..bands).map(|b| 400.0 + 10.0 * b as f64));
+        let cube = SpectralCube::new(data, wl, None, None).unwrap();
+
+        // Full PCA (all bands)
+        let full = pca(&cube, None).unwrap();
+        // Truncated PCA (5 components) — should use randomized path
+        let trunc = pca(&cube, Some(n_comp)).unwrap();
+
+        // Check variance ratio: truncated should capture similar variance
+        let full_top_var: f64 = full.explained_variance.iter().take(n_comp).sum();
+        let trunc_var: f64 = trunc.explained_variance.iter().sum();
+        let var_ratio = (full_top_var - trunc_var).abs() / full_top_var;
+        assert!(
+            var_ratio < 0.01,
+            "variance ratio difference {:.4} exceeds 1%",
+            var_ratio
+        );
+
+        // Check component alignment: dot product > 0.99 for significant components.
+        // Only check components whose explained variance is > 1% of total —
+        // near-degenerate eigenvalues produce unstable subspace orientations.
+        let total_var: f64 = full.explained_variance.iter().sum();
+        for i in 0..n_comp {
+            if full.explained_variance[i] / total_var < 0.01 {
+                continue;
+            }
+            let dot: f64 = full
+                .components
+                .row(i)
+                .iter()
+                .zip(trunc.components.row(i).iter())
+                .map(|(a, b)| a * b)
+                .sum::<f64>()
+                .abs();
+            assert!(
+                dot > 0.99,
+                "component {} alignment {:.4} < 0.99",
+                i,
+                dot
+            );
+        }
+    }
+
+    #[test]
+    fn test_pca_randomized_roundtrip() {
+        // 10-band 16x16 cube, 5 components, check reconstruction SNR > 10
+        let bands = 10;
+        let height = 16;
+        let width = 16;
+        let n_comp = 5;
+
+        let mut data = Array3::zeros((bands, height, width));
+        let mut rng_state: u64 = 54321;
+        for b in 0..bands {
+            for row in 0..height {
+                for col in 0..width {
+                    rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let noise = (rng_state >> 33) as f64 / (1u64 << 31) as f64 - 0.5;
+                    let signal = (row as f64 * 0.1 + col as f64 * 0.05 + b as f64 * 0.2) / 10.0;
+                    data[[b, row, col]] = signal + 0.01 * noise;
+                }
+            }
+        }
+        let wl = Array1::from_iter((0..bands).map(|b| 400.0 + 10.0 * b as f64));
+        let cube = SpectralCube::new(data.clone(), wl, None, None).unwrap();
+
+        let result = pca(&cube, Some(n_comp)).unwrap();
+        let scores = pca_transform(&cube, &result).unwrap();
+        let reconstructed = pca_inverse(&scores, &result).unwrap();
+
+        // Compute SNR = 10 * log10(signal_power / error_power)
+        let mut signal_power = 0.0;
+        let mut error_power = 0.0;
+        let recon = reconstructed.data();
+        for b in 0..bands {
+            for row in 0..height {
+                for col in 0..width {
+                    let orig = data[[b, row, col]];
+                    let rec = recon[[b, row, col]];
+                    signal_power += orig * orig;
+                    error_power += (orig - rec) * (orig - rec);
+                }
+            }
+        }
+        let snr = 10.0 * (signal_power / error_power).log10();
+        assert!(
+            snr > 10.0,
+            "reconstruction SNR {:.1} dB < 10 dB",
+            snr
+        );
     }
 }

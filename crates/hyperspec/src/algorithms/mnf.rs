@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use crate::cube::SpectralCube;
 use crate::error::{HyperspecError, Result};
 
-use super::pca::faer_sym_eigen_ndarray;
+use crate::linalg;
 
 /// Result of an MNF computation.
 #[derive(Debug, Clone)]
@@ -86,88 +86,18 @@ fn mnf_core(cube: &SpectralCube, n_components: usize) -> Result<MnfInternals> {
     // Estimate noise covariance using horizontal spatial differences
     let noise_cov = estimate_noise_covariance(cube);
 
-    // Compute data covariance via tiled GEMM (same approach as PCA)
-    let n_f = (n_pixels - 1).max(1) as f64;
-    let data_cov = if n_pixels <= 32768 {
-        // Small: scalar triangle accumulation
-        let tri_size = bands * (bands + 1) / 2;
-        let mut tri = vec![0.0; tri_size];
-        let mut centered = vec![0.0; bands];
-        for row in 0..height {
-            for col in 0..width {
-                for b in 0..bands {
-                    centered[b] = data[[b, row, col]] - mean[b];
-                }
-                let mut idx = 0;
-                for i in 0..bands {
-                    for j in i..bands {
-                        tri[idx] += centered[i] * centered[j];
-                        idx += 1;
-                    }
-                }
-            }
-        }
-        let mut cov = Array2::<f64>::zeros((bands, bands));
-        let inv_n = 1.0 / n_f;
-        let mut idx = 0;
-        for i in 0..bands {
-            for j in i..bands {
-                let v = tri[idx] * inv_n;
-                cov[[i, j]] = v;
-                cov[[j, i]] = v;
-                idx += 1;
-            }
-        }
-        cov
-    } else {
-        // Large: tiled GEMM via faer
-        let tile_size = 32768;
-        let mut cov_faer = faer::Mat::<f64>::zeros(bands, bands);
-        let mut tile_buf = vec![0.0f64; tile_size * bands];
-
-        for tile_start in (0..n_pixels).step_by(tile_size) {
-            let tile_end = (tile_start + tile_size).min(n_pixels);
-            let rows_in_tile = tile_end - tile_start;
-
-            for b in 0..bands {
-                let band_slice = data.slice(s![b, .., ..]);
-                let band_data = band_slice.as_standard_layout();
-                let band_raw = band_data.as_slice().expect("band is contiguous");
-                let col_start = b * tile_size;
-                let mean_b = mean[b];
-                for i in 0..rows_in_tile {
-                    tile_buf[col_start + i] = band_raw[tile_start + i] - mean_b;
-                }
-            }
-
-            let tile = faer::MatRef::from_column_major_slice(
-                &tile_buf[..rows_in_tile * bands],
-                rows_in_tile,
-                bands,
-            );
-
-            faer::linalg::matmul::matmul(
-                cov_faer.as_mut(),
-                faer::Accum::Add,
-                tile.transpose(),
-                tile,
-                1.0,
-                faer::Par::rayon(0),
-            );
-        }
-
-        let inv_n = 1.0 / n_f;
-        let mut cov = Array2::<f64>::zeros((bands, bands));
-        for i in 0..bands {
-            for j in 0..bands {
-                cov[[i, j]] = cov_faer[(i, j)] * inv_n;
-            }
-        }
-        cov
-    };
+    // Compute data covariance via linalg (tiled GEMM, correct tile stride)
+    let data_cov = linalg::clean_covariance(
+        data,
+        mean.as_slice().unwrap(),
+        n_pixels,
+        bands,
+        height,
+        width,
+    );
 
     // Eigendecompose noise covariance via faer
-    let (noise_eigenvalues, noise_eigenvectors) = faer_sym_eigen_ndarray(&noise_cov)?;
+    let (noise_eigenvalues, noise_eigenvectors) = linalg::sym_eigen(&noise_cov)?;
 
     // Check that noise has non-trivial eigenvalues
     let n_valid = noise_eigenvalues.iter().filter(|&&v| v > 1e-12).count();
@@ -206,7 +136,7 @@ fn mnf_core(cube: &SpectralCube, n_components: usize) -> Result<MnfInternals> {
     let whitened_cov = noise_inv_sqrt.dot(&data_cov).dot(&noise_inv_sqrt);
 
     // Eigendecompose the whitened covariance via faer
-    let (eigenvalues, whitened_eigenvectors) = faer_sym_eigen_ndarray(&whitened_cov)?;
+    let (eigenvalues, whitened_eigenvectors) = linalg::sym_eigen(&whitened_cov)?;
 
     // Sort by descending eigenvalue
     let mut sorted_indices: Vec<usize> = (0..bands).collect();
@@ -303,44 +233,15 @@ pub fn mnf_denoise(cube: &SpectralCube, n_components: usize) -> Result<SpectralC
         .dot(&v.t())
         .dot(&internals.noise_inv_sqrt);
 
-    let data = cube.data();
-    let height = cube.height();
-    let width = cube.width();
-    let mean = &internals.mean;
+    let mean_slice = internals.mean.as_slice().unwrap();
 
-    // Apply D per pixel: result = D @ (pixel - mean) + mean
-    let rows: Vec<Vec<f64>> = (0..height)
-        .into_par_iter()
-        .map(|row| {
-            let mut row_data = vec![0.0; bands * width];
-            for col in 0..width {
-                let mut centered = vec![0.0; bands];
-                for b in 0..bands {
-                    centered[b] = data[[b, row, col]] - mean[b];
-                }
-                for b in 0..bands {
-                    let mut val = mean[b];
-                    for k in 0..bands {
-                        val += denoise_matrix[[b, k]] * centered[k];
-                    }
-                    row_data[b * width + col] = val;
-                }
-            }
-            row_data
-        })
-        .collect();
-
-    let band_size = height * width;
-    let mut flat = vec![0.0f64; bands * band_size];
-    for (row, row_data) in rows.iter().enumerate() {
-        for b in 0..bands {
-            let src = &row_data[b * width..(b + 1) * width];
-            let dst_start = b * band_size + row * width;
-            flat[dst_start..dst_start + width].copy_from_slice(src);
-        }
-    }
-    let out = ndarray::Array3::from_shape_vec((bands, height, width), flat)
-        .expect("shape matches total element count");
+    // Apply D via tiled GEMM: result = D @ (data - mean) + mean
+    let out = linalg::bsq_transform(
+        cube.data(),
+        &denoise_matrix,
+        Some(mean_slice),
+        Some(mean_slice),
+    );
 
     SpectralCube::new(
         out,

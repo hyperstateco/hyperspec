@@ -4,6 +4,7 @@ pub mod algorithms;
 pub mod cube;
 pub mod error;
 pub mod io;
+pub(crate) mod linalg;
 
 pub use algorithms::continuum::continuum_removal;
 pub use algorithms::derivative::derivative;
