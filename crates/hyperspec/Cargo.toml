@@ -15,10 +15,3 @@ zarrs = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 faer = { version = "0.24.0", default-features = false, features = ["std", "rayon"] }
-
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "linalg"
-harness = false
