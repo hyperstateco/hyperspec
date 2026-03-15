@@ -38,13 +38,18 @@ use crate::error::{HyperspecError, Result};
 // Public options
 // ---------------------------------------------------------------------------
 
-/// Options for reading Zarr stores with explicit array paths.
-#[derive(Debug, Clone)]
+/// Options for reading Zarr stores.
+///
+/// When `data_path` and `wavelength_path` are both `None`, arrays are
+/// auto-discovered using common naming conventions. When both are `Some`, the
+/// provided array paths are used explicitly. Supplying only one path is an
+/// error.
+#[derive(Debug, Clone, Default)]
 pub struct ZarrReadOptions {
     /// Zarr path to the 3-D reflectance/radiance array (e.g. "/reflectance").
-    pub data_path: String,
+    pub data_path: Option<String>,
     /// Zarr path to the 1-D wavelength array (e.g. "/sensor/wavelengths").
-    pub wavelength_path: String,
+    pub wavelength_path: Option<String>,
     /// Zarr path to the 1-D FWHM array (optional).
     pub fwhm_path: Option<String>,
     /// Override the nodata value.
@@ -79,6 +84,17 @@ pub struct ZarrWriteOptions {
     pub overwrite: bool,
 }
 
+impl ZarrReadOptions {
+    /// Create read options that use explicit data and wavelength array paths.
+    pub fn explicit(data_path: impl Into<String>, wavelength_path: impl Into<String>) -> Self {
+        Self {
+            data_path: Some(data_path.into()),
+            wavelength_path: Some(wavelength_path.into()),
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for ZarrWriteOptions {
     fn default() -> Self {
         Self {
@@ -101,13 +117,16 @@ impl Default for ZarrWriteOptions {
 ///
 /// For stores with non-standard layouts, use [`read_zarr_with_options`].
 pub fn read_zarr(path: impl AsRef<Path>) -> Result<SpectralCube> {
-    let path = path.as_ref();
-    let store = open_store(path)?;
-    let disc = discover_arrays(&store, path)?;
-    read_cube_from_discovered(&store, &disc, path)
+    read_zarr_with_options(path, &ZarrReadOptions::default())
 }
 
-/// Read a hyperspectral cube from a Zarr store using explicit array paths.
+/// Read a hyperspectral cube from a Zarr store using configurable read
+/// options.
+///
+/// With default options, arrays are auto-discovered and metadata such as
+/// nodata or scale/offset may still be overridden. For stores with
+/// non-standard layouts, provide explicit `data_path` and `wavelength_path`
+/// values.
 pub fn read_zarr_with_options(
     path: impl AsRef<Path>,
     opts: &ZarrReadOptions,
@@ -115,31 +134,43 @@ pub fn read_zarr_with_options(
     let path = path.as_ref();
     let store = open_store(path)?;
 
-    let data_arr = open_zarr_array(&store, &opts.data_path, path)?;
-    let wl_arr = open_zarr_array(&store, &opts.wavelength_path, path)?;
-    let fwhm_arr = opts
-        .fwhm_path
-        .as_ref()
-        .map(|p| open_zarr_array(&store, p, path))
-        .transpose()?;
+    match (&opts.data_path, &opts.wavelength_path) {
+        (Some(data_path), Some(wavelength_path)) => {
+            let data_arr = open_zarr_array(&store, data_path, path)?;
+            let wl_arr = open_zarr_array(&store, wavelength_path, path)?;
+            let fwhm_arr = opts
+                .fwhm_path
+                .as_ref()
+                .map(|p| open_zarr_array(&store, p, path))
+                .transpose()?;
 
-    let mut data = retrieve_3d_f64(&data_arr, path)?;
-    let wavelengths = retrieve_1d_f64(&wl_arr, path)?;
-    let fwhm = fwhm_arr
-        .as_ref()
-        .map(|a| retrieve_1d_f64(a, path))
-        .transpose()?;
+            let mut data = retrieve_3d_f64(&data_arr, path)?;
+            let wavelengths = retrieve_1d_f64(&wl_arr, path)?;
+            let fwhm = fwhm_arr
+                .as_ref()
+                .map(|a| retrieve_1d_f64(a, path))
+                .transpose()?;
 
-    let nodata = opts.nodata.or_else(|| read_fill_value_attr(&data_arr));
+            let nodata = opts.nodata.or_else(|| read_fill_value_attr(&data_arr));
 
-    if opts.scale_factor.is_some() || opts.add_offset.is_some() {
-        let scale = opts.scale_factor.unwrap_or(1.0);
-        let offset = opts.add_offset.unwrap_or(0.0);
-        apply_scale_offset(&mut data, scale, offset, nodata);
+            if opts.scale_factor.is_some() || opts.add_offset.is_some() {
+                let scale = opts.scale_factor.unwrap_or(1.0);
+                let offset = opts.add_offset.unwrap_or(0.0);
+                apply_scale_offset(&mut data, scale, offset, nodata);
+            }
+
+            let data = orient_to_bsq(data, wavelengths.len(), path)?;
+            SpectralCube::new(data, wavelengths, fwhm, nodata)
+        }
+        (None, None) => {
+            let mut disc = discover_arrays(&store, path)?;
+            apply_read_overrides(&mut disc, opts);
+            read_cube_from_discovered(&store, &disc, path)
+        }
+        _ => Err(HyperspecError::InvalidInput(
+            "data_path and wavelength_path must be provided together".to_string(),
+        )),
     }
-
-    let data = orient_to_bsq(data, wavelengths.len(), path)?;
-    SpectralCube::new(data, wavelengths, fwhm, nodata)
 }
 
 /// Query the shape of a Zarr cube without loading any data.
@@ -538,6 +569,21 @@ fn discover_arrays(
     })
 }
 
+fn apply_read_overrides(disc: &mut DiscoveredArrays, opts: &ZarrReadOptions) {
+    if let Some(fwhm_path) = &opts.fwhm_path {
+        disc.fwhm_path = Some(fwhm_path.clone());
+    }
+    if opts.nodata.is_some() {
+        disc.nodata = opts.nodata;
+    }
+    if opts.scale_factor.is_some() {
+        disc.scale_factor = opts.scale_factor;
+    }
+    if opts.add_offset.is_some() {
+        disc.add_offset = opts.add_offset;
+    }
+}
+
 fn collect_array_paths(
     store: &ReadableWritableListableStorage,
     group: &zarrs::group::Group<dyn zarrs::storage::ReadableWritableListableStorageTraits>,
@@ -913,18 +959,55 @@ mod tests {
         write_zarr(&cube, &store_path).unwrap();
 
         // Read back with scale_factor to convert DN → reflectance
+        let mut opts = ZarrReadOptions::explicit("/reflectance", "/sensor/wavelengths");
+        opts.scale_factor = Some(0.0001);
+        opts.add_offset = Some(0.0);
+        let loaded = read_zarr_with_options(&store_path, &opts).unwrap();
+
+        assert!((loaded.data()[[0, 0, 0]] - 1.0).abs() < 1e-10);
+        assert!((loaded.data()[[1, 0, 0]] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn read_with_autodiscovery_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("test_auto_scale.zarr");
+
+        let data = Array3::from_shape_fn((2, 3, 4), |(b, _r, _c)| (b as f64 + 1.0) * 100.0);
+        let wl = Array1::from_vec(vec![500.0, 600.0]);
+        let cube = SpectralCube::new(data, wl, None, None).unwrap();
+        write_zarr(&cube, &store_path).unwrap();
+
         let opts = ZarrReadOptions {
-            data_path: "/reflectance".to_string(),
-            wavelength_path: "/sensor/wavelengths".to_string(),
-            fwhm_path: None,
-            nodata: None,
-            scale_factor: Some(0.0001),
+            scale_factor: Some(0.01),
             add_offset: Some(0.0),
+            ..ZarrReadOptions::default()
         };
         let loaded = read_zarr_with_options(&store_path, &opts).unwrap();
 
         assert!((loaded.data()[[0, 0, 0]] - 1.0).abs() < 1e-10);
         assert!((loaded.data()[[1, 0, 0]] - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn read_with_partial_explicit_paths_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("test_partial_paths.zarr");
+
+        let cube = make_cube();
+        write_zarr(&cube, &store_path).unwrap();
+
+        let opts = ZarrReadOptions {
+            data_path: Some("/reflectance".to_string()),
+            ..ZarrReadOptions::default()
+        };
+        let err = read_zarr_with_options(&store_path, &opts).unwrap_err();
+
+        assert!(matches!(err, HyperspecError::InvalidInput(_)));
+        assert!(
+            err.to_string()
+                .contains("data_path and wavelength_path must be provided together")
+        );
     }
 
     #[test]
@@ -938,14 +1021,9 @@ mod tests {
         let cube = SpectralCube::new(data, wl, None, Some(-9999.0)).unwrap();
         write_zarr(&cube, &store_path).unwrap();
 
-        let opts = ZarrReadOptions {
-            data_path: "/reflectance".to_string(),
-            wavelength_path: "/sensor/wavelengths".to_string(),
-            fwhm_path: None,
-            nodata: Some(-9999.0),
-            scale_factor: Some(0.01),
-            add_offset: None,
-        };
+        let mut opts = ZarrReadOptions::explicit("/reflectance", "/sensor/wavelengths");
+        opts.nodata = Some(-9999.0);
+        opts.scale_factor = Some(0.01);
         let loaded = read_zarr_with_options(&store_path, &opts).unwrap();
 
         assert_eq!(loaded.data()[[0, 0, 0]], -9999.0);

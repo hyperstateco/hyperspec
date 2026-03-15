@@ -1,4 +1,4 @@
-"""Type stubs for hyperspec — fast processing library for hyperspectral imagery."""
+"""Type stubs for hyperspec — fast hyperspectral processing for remote sensing and machine learning."""
 
 import numpy as np
 import numpy.typing as npt
@@ -525,10 +525,13 @@ def write_envi(
             Defaults to ``"f64"``.
         interleave: Band interleave — ``"bsq"``, ``"bil"``, or ``"bip"``.
             Defaults to ``"bsq"``.
-        force: If True, overwrite existing files.
+        force: For integer output types, allow lossy conversion by clamping
+            out-of-range values, rounding fractional values, and replacing NaN
+            with nodata (or 0 if nodata is unset).
 
     Raises:
-        ValueError: If data_type or interleave is invalid, or the file exists and force is False.
+        ValueError: If data_type or interleave is invalid, or integer conversion
+            would be lossy and ``force`` is False.
     """
     ...
 
@@ -543,8 +546,10 @@ def read_zarr(
 ) -> SpectralCube:
     """Read a spectral cube from a Zarr V3 store.
 
-    With no optional arguments, uses auto-discovery to locate data and wavelength arrays.
-    Provide ``data_path`` and ``wavelength_path`` to specify explicit array paths within the store.
+    With no path overrides, uses auto-discovery to locate data and wavelength arrays.
+    Metadata overrides such as ``nodata`` or ``scale_factor`` still apply in the
+    auto-discovery path. Provide both ``data_path`` and ``wavelength_path`` to
+    specify explicit array paths within the store.
 
     Args:
         path: Path to the Zarr store directory.
@@ -552,6 +557,35 @@ def read_zarr(
         wavelength_path: Path to the wavelength array within the store.
         fwhm_path: Path to the FWHM array within the store.
         nodata: Nodata sentinel value.
+        scale_factor: Multiplicative scale factor applied after reading.
+        add_offset: Additive offset applied after reading and scaling.
+
+    Returns:
+        Loaded spectral cube.
+
+    Raises:
+        ValueError: If the store cannot be read, required arrays are missing, or
+            only one of ``data_path`` / ``wavelength_path`` is provided.
+    """
+    ...
+
+def read_zarr_with_options(
+    path: str,
+    data_path: str,
+    wavelength_path: str,
+    fwhm_path: str | None = None,
+    nodata: float | None = None,
+    scale_factor: float | None = None,
+    add_offset: float | None = None,
+) -> SpectralCube:
+    """Read a spectral cube from a Zarr V3 store using explicit array paths.
+
+    Args:
+        path: Path to the Zarr store directory.
+        data_path: Path to the 3-D data array within the store.
+        wavelength_path: Path to the 1-D wavelength array within the store.
+        fwhm_path: Path to the FWHM array within the store.
+        nodata: Nodata sentinel value override.
         scale_factor: Multiplicative scale factor applied after reading.
         add_offset: Additive offset applied after reading and scaling.
 
@@ -616,8 +650,9 @@ def write_zarr(
         path: Output Zarr store directory path.
         compression: Compression codec — ``"none"`` or ``"gzip"``. Defaults to ``"gzip"``.
         gzip_level: Gzip compression level (0-9). Defaults to 5.
-        chunk_shape: Chunk dimensions as (bands, rows, cols). If None, uses the full
-            array shape. Use e.g. ``(bands, 256, 256)`` for ML-friendly spatial tiling.
+        chunk_shape: Chunk dimensions as (bands, rows, cols). If None, defaults to
+            ``(1, rows, cols)`` for band-sequential access. Use e.g.
+            ``(bands, 256, 256)`` for ML-friendly spatial tiling.
         overwrite: If True, overwrite an existing store.
 
     Raises:

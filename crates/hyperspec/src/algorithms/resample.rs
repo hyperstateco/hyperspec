@@ -26,6 +26,7 @@ pub fn resample(
     method: ResampleMethod,
 ) -> Result<SpectralCube> {
     let src_wl = cube.wavelengths();
+    let bands = cube.bands();
     let n_target = target_wavelengths.len();
 
     if n_target == 0 {
@@ -45,6 +46,26 @@ pub fn resample(
         ));
     }
 
+    let data = cube.data();
+    let height = cube.height();
+    let width = cube.width();
+    let nodata = cube.nodata();
+    let src_wl_std = src_wl.as_standard_layout();
+    let src_slice = src_wl_std
+        .as_slice()
+        .expect("source wavelengths contiguous after as_standard_layout");
+
+    if bands == n_target && target_slice == src_slice {
+        return Ok(cube.clone());
+    }
+
+    if bands < 2 {
+        return Err(HyperspecError::InvalidInput(
+            "resample requires at least 2 source bands unless target wavelengths exactly match the source grid"
+                .to_string(),
+        ));
+    }
+
     // Validate target range is within source range
     let src_min = src_wl[0];
     let src_max = src_wl[src_wl.len() - 1];
@@ -57,22 +78,12 @@ pub fn resample(
         )));
     }
 
-    let data = cube.data();
-    let bands = cube.bands();
-    let height = cube.height();
-    let width = cube.width();
-    let nodata = cube.nodata();
-    let src_wl_std = src_wl.as_standard_layout();
-    let src_slice = src_wl_std
-        .as_slice()
-        .expect("source wavelengths contiguous after as_standard_layout");
-
     let rows: Vec<Vec<f64>> = (0..height)
         .into_par_iter()
         .map(|row| {
             let mut row_data = vec![0.0; n_target * width];
+            let mut spectrum = vec![0.0; bands];
             for col in 0..width {
-                let mut spectrum = vec![0.0; bands];
                 let mut has_invalid = false;
                 for b in 0..bands {
                     let v = data[[b, row, col]];
@@ -315,6 +326,29 @@ mod tests {
         let resampled = resample(&cube, &target, ResampleMethod::Linear).unwrap();
         assert_eq!(resampled.bands(), 1);
         assert!((resampled.data()[[0, 0, 0]] - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_resample_single_band_identity() {
+        let wl = Array1::from_vec(vec![550.0]);
+        let data = Array3::from_shape_fn((1, 2, 2), |(_, r, c)| (r * 10 + c) as f64);
+        let cube = SpectralCube::new(data, wl.clone(), None, Some(-9999.0)).unwrap();
+
+        let resampled = resample(&cube, &wl, ResampleMethod::Linear).unwrap();
+        assert_eq!(resampled.data(), cube.data());
+        assert_eq!(resampled.wavelengths(), cube.wavelengths());
+        assert_eq!(resampled.nodata(), cube.nodata());
+    }
+
+    #[test]
+    fn test_resample_single_band_new_grid_errors() {
+        let wl = Array1::from_vec(vec![550.0]);
+        let data = Array3::from_elem((1, 1, 1), 1.0);
+        let cube = SpectralCube::new(data, wl, None, None).unwrap();
+        let target = Array1::from_vec(vec![551.0]);
+
+        let err = resample(&cube, &target, ResampleMethod::Linear).unwrap_err();
+        assert!(err.to_string().contains("at least 2 source bands"));
     }
 
     #[test]

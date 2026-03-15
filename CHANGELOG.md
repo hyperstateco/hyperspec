@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+- **Breaking**: unify configurable Zarr reads under `ZarrReadOptions`
+- **Fix**: support metadata overrides during Zarr autodiscovery and expose Python `read_zarr_with_options(...)`
+- **Fix**: `resample(...)` returns an error for unsupported single-band interpolation instead of panicking
+- **Perf**: fast-path identical-grid resamples and reuse spectrum buffers in `resample(...)`
+- **Docs/Tests**: sync Python docs/stubs and add Zarr/ENVI regression coverage
+
 ## 0.7.3
 
 - **Perf**: MNF denoise, PCA transform/inverse use tiled GEMM instead of per-pixel loops

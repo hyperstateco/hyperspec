@@ -1,4 +1,4 @@
-"""Fast processing library for hyperspectral imagery."""
+"""Fast hyperspectral processing for remote sensing and machine learning."""
 
 from hyperspec._hyperspec import (
     BandStats,
@@ -23,6 +23,7 @@ from hyperspec._hyperspec import (
     pca_transform,
     read_envi,
     read_zarr,
+    read_zarr_with_options,
     read_zarr_window,
     resample,
     sam,
@@ -55,6 +56,7 @@ __all__ = [
     "pca_transform",
     "read_envi",
     "read_zarr",
+    "read_zarr_with_options",
     "read_zarr_window",
     "resample",
     "sam",

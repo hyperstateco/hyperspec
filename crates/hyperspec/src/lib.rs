@@ -1,4 +1,4 @@
-//! Fast processing library for hyperspectral imagery.
+//! Fast hyperspectral processing for remote sensing and machine learning.
 
 pub mod algorithms;
 pub mod cube;

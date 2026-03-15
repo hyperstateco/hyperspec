@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/hyperspec-py)](https://pypi.org/project/hyperspec-py/)
 [![License](https://img.shields.io/crates/l/hyperspec)](LICENSE)
 
-Fast hyperspectral data processing for remote sensing and ML pipelines. Rust core with Python bindings.
+Fast hyperspectral processing for remote sensing and machine learning. Rust core with Python bindings.
 
 Built by [Hyperstate](https://hyperstate.co) — foundation models for Earth intelligence.
 
@@ -35,7 +35,7 @@ cargo add hyperspec
 or
 ```toml
 [dependencies]
-hyperspec = "0.7"
+hyperspec = "0.8"
 ```
 
 ## Quickstart
@@ -69,7 +69,7 @@ normed = normalize_zscore(clean)
 
 reference = normed.spectrum(50, 50)
 angles = sam(normed, reference)             # spectral similarity
-veg = ndvi(normed, nir=90, red=55)          # vegetation index
+veg = ndvi(normed, nir_band=90, red_band=55)  # vegetation index
 pca_result = pca(normed, n_components=10)   # dimensionality reduction
 
 # --- Storage ---
@@ -139,7 +139,7 @@ tile = read_zarr_window("chips.zarr", bands=(0, normed.bands), rows=(0, 256), co
 | Spectral Angle Mapper | `sam(cube, reference)` |
 | Normalized difference | `normalized_difference(cube, a, b)` |
 | Band ratio | `band_ratio(cube, a, b)` |
-| NDVI | `ndvi(cube, nir, red)` |
+| NDVI | `ndvi(cube, nir_band, red_band)` |
 | PCA | `pca(cube, n_components)` |
 
 ## Architecture

@@ -19,14 +19,21 @@ from hyperspec import (
     pca,
     pca_inverse,
     pca_transform,
+    read_envi,
+    read_zarr,
+    read_zarr_with_options,
+    read_zarr_window,
     resample,
     sam,
     savitzky_golay,
+    write_envi,
+    write_zarr,
+    zarr_cube_shape,
 )
 
 
 def test_version():
-    assert hyperspec.__version__ == "0.7.3"
+    assert hyperspec.__version__ == "0.8.0"
 
 
 def make_cube(bands=3, height=2, width=4):
@@ -636,6 +643,115 @@ class TestResample:
         cube = self._make_linear_cube()
         with pytest.raises(ValueError, match="unknown method"):
             resample(cube, np.array([500.0]), "spline")
+
+    def test_resample_single_band_identity(self):
+        data = np.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=np.float64)
+        wl = np.array([550.0])
+        cube = SpectralCube(data, wl, nodata=-9999.0)
+        resampled = resample(cube, wl, "linear")
+        np.testing.assert_array_equal(resampled.data(), cube.data())
+        np.testing.assert_array_equal(resampled.wavelengths(), cube.wavelengths())
+        assert resampled.nodata == cube.nodata
+
+    def test_resample_single_band_new_grid_errors(self):
+        cube = SpectralCube(np.array([[[1.0]]]), np.array([550.0]))
+        with pytest.raises(ValueError, match="at least 2 source bands"):
+            resample(cube, np.array([551.0]), "linear")
+
+
+class TestIO:
+    def _make_non_ambiguous_zarr_cube(self):
+        # Avoid shapes like (2, 2, 2), which are intentionally ambiguous for
+        # the Zarr orientation heuristic because multiple axes match wl_count.
+        data = np.zeros((2, 3, 4), dtype=np.float64)
+        data[0] = 100.0
+        data[1] = 200.0
+        return SpectralCube(data, np.array([500.0, 600.0]))
+
+    def test_write_zarr_roundtrip_and_shape_query(self, tmp_path):
+        cube = make_cube()
+        store_path = tmp_path / "cube.zarr"
+
+        write_zarr(cube, str(store_path), compression="none")
+        loaded = read_zarr(str(store_path))
+
+        assert zarr_cube_shape(str(store_path)) == cube.shape
+        np.testing.assert_array_equal(loaded.data(), cube.data())
+        np.testing.assert_array_equal(loaded.wavelengths(), cube.wavelengths())
+
+    def test_read_zarr_autodiscovery_overrides(self, tmp_path):
+        cube = self._make_non_ambiguous_zarr_cube()
+        store_path = tmp_path / "scaled.zarr"
+
+        write_zarr(cube, str(store_path), compression="none")
+        loaded = read_zarr(str(store_path), scale_factor=0.01, add_offset=0.0)
+
+        assert loaded.data()[0, 0, 0] == pytest.approx(1.0)
+        assert loaded.data()[1, 0, 0] == pytest.approx(2.0)
+
+    def test_read_zarr_with_options_alias(self, tmp_path):
+        cube = self._make_non_ambiguous_zarr_cube()
+        store_path = tmp_path / "explicit.zarr"
+
+        write_zarr(cube, str(store_path), compression="none")
+        loaded = read_zarr_with_options(
+            str(store_path),
+            data_path="/reflectance",
+            wavelength_path="/sensor/wavelengths",
+            scale_factor=0.01,
+        )
+
+        assert loaded.data()[0, 0, 0] == pytest.approx(1.0)
+        assert loaded.data()[1, 0, 0] == pytest.approx(2.0)
+
+    def test_read_zarr_ambiguous_shape_errors(self, tmp_path):
+        data = np.zeros((2, 2, 2), dtype=np.float64)
+        data[0] = 100.0
+        data[1] = 200.0
+        cube = SpectralCube(data, np.array([500.0, 600.0]))
+        store_path = tmp_path / "ambiguous.zarr"
+
+        write_zarr(cube, str(store_path), compression="none")
+
+        with pytest.raises(ValueError, match="ambiguous orientation"):
+            read_zarr(str(store_path))
+
+    def test_read_zarr_partial_paths_raise(self, tmp_path):
+        cube = make_cube()
+        store_path = tmp_path / "partial.zarr"
+
+        write_zarr(cube, str(store_path), compression="none")
+        with pytest.raises(ValueError, match="provided together"):
+            read_zarr(str(store_path), data_path="/reflectance")
+
+    def test_read_zarr_window(self, tmp_path):
+        cube = make_cube(bands=4, height=4, width=5)
+        store_path = tmp_path / "window.zarr"
+
+        write_zarr(cube, str(store_path), compression="none", chunk_shape=(4, 2, 2))
+        window = read_zarr_window(str(store_path), bands=(1, 3), rows=(1, 3), cols=(2, 5))
+
+        assert window.shape == (2, 2, 3)
+        np.testing.assert_array_equal(window.wavelengths(), cube.wavelengths()[1:3])
+        np.testing.assert_array_equal(window.data(), cube.data()[1:3, 1:3, 2:5])
+
+    def test_write_envi_force_controls_integer_conversion(self, tmp_path):
+        data = np.array(
+            [
+                [[1.2, 2.8]],
+                [[3.5, 4.4]],
+            ],
+            dtype=np.float64,
+        )
+        cube = SpectralCube(data, np.array([500.0, 600.0]))
+        out_path = tmp_path / "cube.bin"
+
+        with pytest.raises(ValueError, match="fractional"):
+            write_envi(cube, str(out_path), data_type="u8")
+
+        write_envi(cube, str(out_path), data_type="u8", force=True)
+        loaded = read_envi(str(out_path))
+        np.testing.assert_array_equal(loaded.data(), np.array([[[1.0, 3.0]], [[4.0, 4.0]]]))
 
 
 class TestBandStats:

@@ -11,7 +11,7 @@ use hyperspec::{
     mnf_denoise as rs_mnf_denoise, ndvi as rs_ndvi, normalize_minmax as rs_normalize_minmax,
     normalize_zscore as rs_normalize_zscore, normalized_difference as rs_normalized_difference,
     pca as rs_pca, pca_inverse as rs_pca_inverse, pca_transform as rs_pca_transform,
-    read_envi as rs_read_envi, read_zarr as rs_read_zarr, read_zarr_window as rs_read_zarr_window,
+    read_envi as rs_read_envi, read_zarr_window as rs_read_zarr_window,
     read_zarr_with_options as rs_read_zarr_with_options, resample as rs_resample, sam as rs_sam,
     savitzky_golay as rs_savitzky_golay, write_envi_with_options as rs_write_envi_with_options,
     write_zarr_with_options as rs_write_zarr_with_options, zarr_cube_shape as rs_zarr_cube_shape,
@@ -207,6 +207,24 @@ impl PyPcaResult {
 
 fn to_value_err(e: hyperspec::HyperspecError) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string())
+}
+
+fn zarr_read_options(
+    data_path: Option<&str>,
+    wavelength_path: Option<&str>,
+    fwhm_path: Option<&str>,
+    nodata: Option<f64>,
+    scale_factor: Option<f64>,
+    add_offset: Option<f64>,
+) -> ZarrReadOptions {
+    ZarrReadOptions {
+        data_path: data_path.map(str::to_string),
+        wavelength_path: wavelength_path.map(str::to_string),
+        fwhm_path: fwhm_path.map(str::to_string),
+        nodata,
+        scale_factor,
+        add_offset,
+    }
 }
 
 // --- Algorithm functions ---
@@ -529,19 +547,38 @@ fn read_zarr(
     scale_factor: Option<f64>,
     add_offset: Option<f64>,
 ) -> PyResult<PySpectralCube> {
-    let inner = if let (Some(dp), Some(wp)) = (data_path, wavelength_path) {
-        let opts = ZarrReadOptions {
-            data_path: dp.to_string(),
-            wavelength_path: wp.to_string(),
-            fwhm_path: fwhm_path.map(|s| s.to_string()),
-            nodata,
-            scale_factor,
-            add_offset,
-        };
-        rs_read_zarr_with_options(path, &opts).map_err(to_value_err)?
-    } else {
-        rs_read_zarr(path).map_err(to_value_err)?
-    };
+    let opts = zarr_read_options(
+        data_path,
+        wavelength_path,
+        fwhm_path,
+        nodata,
+        scale_factor,
+        add_offset,
+    );
+    let inner = rs_read_zarr_with_options(path, &opts).map_err(to_value_err)?;
+    Ok(PySpectralCube { inner })
+}
+
+#[pyfunction]
+#[pyo3(signature = (path, data_path, wavelength_path, fwhm_path=None, nodata=None, scale_factor=None, add_offset=None))]
+fn read_zarr_with_options(
+    path: &str,
+    data_path: &str,
+    wavelength_path: &str,
+    fwhm_path: Option<&str>,
+    nodata: Option<f64>,
+    scale_factor: Option<f64>,
+    add_offset: Option<f64>,
+) -> PyResult<PySpectralCube> {
+    let opts = zarr_read_options(
+        Some(data_path),
+        Some(wavelength_path),
+        fwhm_path,
+        nodata,
+        scale_factor,
+        add_offset,
+    );
+    let inner = rs_read_zarr_with_options(path, &opts).map_err(to_value_err)?;
     Ok(PySpectralCube { inner })
 }
 
@@ -619,6 +656,7 @@ fn _hyperspec(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_envi, m)?)?;
     m.add_function(wrap_pyfunction!(write_envi, m)?)?;
     m.add_function(wrap_pyfunction!(read_zarr, m)?)?;
+    m.add_function(wrap_pyfunction!(read_zarr_with_options, m)?)?;
     m.add_function(wrap_pyfunction!(zarr_cube_shape, m)?)?;
     m.add_function(wrap_pyfunction!(read_zarr_window, m)?)?;
     m.add_function(wrap_pyfunction!(write_zarr, m)?)?;
