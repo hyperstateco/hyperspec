@@ -11,7 +11,7 @@ jobs:
   publish-crates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Publish hyperspec to crates.io
         env:
@@ -39,8 +39,8 @@ jobs:
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - uses: dtolnay/rust-toolchain@stable
@@ -48,7 +48,7 @@ jobs:
           targets: ${{ matrix.target }}
       - run: pip install maturin "numpy>=2.0" ${{ matrix.cross && 'ziglang' || '' }}
       - run: maturin build --release --target ${{ matrix.target }} ${{ matrix.cross && '--zig -i python3.13' || '' }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: wheels-${{ matrix.target }}
           path: target/wheels/*.whl
@@ -56,13 +56,13 @@ jobs:
   sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - run: pip install maturin
       - run: maturin sdist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: sdist
           path: target/wheels/*.tar.gz
@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
